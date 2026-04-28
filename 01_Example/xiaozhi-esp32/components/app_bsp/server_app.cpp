@@ -8,6 +8,7 @@
 #include "button_bsp.h"
 #include "mdns.h"
 #include "user_app.h"
+#include "power_bsp.h"
 
 static const char *TAG = "server_bsp";
 
@@ -26,8 +27,59 @@ static uint8_t netMode = 0;   //Default AP mode
 const char staresp[] = "1";
 const char apresp[] = "0";
 
+static const char *charge_status_to_string(uint8_t status) {
+    switch (status) {
+        case 0: return "tri_charge";
+        case 1: return "pre_charge";
+        case 2: return "constant_charge";
+        case 3: return "constant_voltage";
+        case 4: return "charge_done";
+        case 5: return "not_charging";
+        default: return "unknown";
+    }
+}
+
+static esp_err_t send_device_status(httpd_req_t *req) {
+    PmicBatteryMetrics battery = Custom_PmicGetBatteryMetrics();
+    char *response = (char *)heap_caps_malloc(512, MALLOC_CAP_8BIT);
+    if (response == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No memory");
+        return ESP_ERR_NO_MEM;
+    }
+
+    snprintf(response, 512,
+        "{"
+            "\"ok\":true,"
+            "\"network\":{\"mode\":\"%s\",\"code\":%u},"
+            "\"battery\":{\"available\":%s,\"connected\":%s,\"level\":%d,\"voltage_mv\":%u,"
+                "\"charging\":%s,\"discharging\":%s,\"standby\":%s,\"vbus_good\":%s,"
+                "\"charge_status\":\"%s\",\"charge_status_code\":%u},"
+            "\"source\":\"pmic\""
+        "}",
+        Get_CurrentlyNetworkMode() ? "STA" : "AP",
+        Get_CurrentlyNetworkMode() ? 1 : 0,
+        battery.available ? "true" : "false",
+        battery.connected ? "true" : "false",
+        battery.percent,
+        battery.voltage_mv,
+        battery.charging ? "true" : "false",
+        battery.discharging ? "true" : "false",
+        battery.standby ? "true" : "false",
+        battery.vbus_good ? "true" : "false",
+        charge_status_to_string(battery.charge_status),
+        battery.charge_status
+    );
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t err = httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+    heap_caps_free(response);
+    return err;
+}
+
 /*callback fun*/
 esp_err_t static_resource_unified_handler(httpd_req_t *req);
+esp_err_t device_status_handler(httpd_req_t *req);
 esp_err_t receive_data_redirect_handler(httpd_req_t *req);
 esp_err_t unknown_uri_handler(httpd_req_t *req);
 void sta_wifi_event_callback(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
@@ -145,6 +197,8 @@ esp_err_t static_resource_unified_handler(httpd_req_t *req) {
         } else {
             httpd_resp_send_chunk(req, apresp, HTTPD_RESP_USE_STRLEN);
         }
+    } else if(strstr(uri,"/DeviceStatus")) {
+        return send_device_status(req);
     } else {     /*留给unknown_uri_handler处理*/
         customfree(resp_str);
         return ESP_FAIL;
@@ -152,6 +206,10 @@ esp_err_t static_resource_unified_handler(httpd_req_t *req) {
     httpd_resp_send_chunk(req, NULL, 0);                    // Send empty data to indicate completion of transmission
     customfree(resp_str);
     return ESP_OK;
+}
+
+esp_err_t device_status_handler(httpd_req_t *req) {
+    return send_device_status(req);
 }
 
 esp_err_t receive_data_redirect_handler(httpd_req_t *req) {
@@ -283,10 +341,17 @@ void ServerPort_init(CustomSDPort *SDPort) {
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn   = httpd_uri_match_wildcard; /*Wildcard enabling*/
+    config.stack_size     = 8192;
     ESP_ERROR_CHECK(httpd_start(&server, &config));
 
     /*Event callback function*/
     httpd_uri_t uri_config = {};
+    uri_config.uri         = "/DeviceStatus";
+    uri_config.method      = HTTP_GET;
+    uri_config.handler     = device_status_handler;
+    uri_config.user_ctx    = NULL;
+    httpd_register_uri_handler(server, &uri_config);
+
     uri_config.uri         = "/*";
     uri_config.method      = HTTP_GET;
     uri_config.handler     = static_resource_unified_handler;

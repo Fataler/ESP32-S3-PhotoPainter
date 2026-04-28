@@ -1,72 +1,111 @@
 <!DOCTYPE html>
-<html data-bs-theme="light" lang="en">
+<html data-bs-theme="light" lang="ru">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, shrink-to-fit=no">
-    <title>ESP32-S3-PhotoPainter</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f4f0e7">
+    <title>PhotoPainter</title>
     <link rel="stylesheet" href="bootstrap.min.css">
     <link rel="stylesheet" href="styles.min.css">
 </head>
 <body>
-    <div class="vw-100 vh-100 p-5 bg-body-secondary d-flex flex-column">
-        <h1 class="text-center fw-bold mb-4">ESP32-S3-PhotoPainter Operating interface</h1>
-        <div class="d-flex justify-content-between gap-5 w-100 mx-auto">
-            <div class="d-flex gap-2 align-items-center">
-                <button class="btn btn-success" id="Input_Button" type="button">
-                    Input
-                </button>
-                <button class="btn btn-success" id="Rotate_Button" type="button">
-                    Rotate:
-                </button>
+    <main class="app-shell">
+        <section class="hero">
+            <div>
+                <p class="app-kicker">ESP32-S3-PhotoPainter</p>
+                <h1>Отправка изображения на рамку</h1>
+                <p class="hero-copy">
+                    Выберите фото, проверьте 6-цветную подготовку и отправьте файл на e-paper экран.
+                </p>
             </div>
-            <div class="d-flex gap-2 align-items-center">
-                <div class="d-flex align-items-center gap-2 ms-5">
-                    <span>NetworkMode:</span>
-                    <div class="btn-group">
-                        <a data-mode="AP" class="btn btn-outline-success active">AP</a>
-                        <a data-mode="STA" class="btn btn-outline-success">STA</a>
-                    </div>
+            <div class="mode-panel" aria-label="Режим сети">
+                <span class="mode-label">Режим сети</span>
+                <div class="btn-group mode-toggle" role="group" aria-label="Выбор режима сети">
+                    <a href="#" data-mode="AP" class="btn active">AP</a>
+                    <a href="#" data-mode="STA" class="btn">STA</a>
                 </div>
-                <button class="btn btn-success" id="Send_Button" type="button" style="min-width: 200px;">
-                    Send
-                </button>
             </div>
-        </div>
-        <div id="tips" class="mt-2">
-            <div id="tips-AP" class="text-end">
-                The settings will take effect after a restart. For AP mode, first connect to the SSID: esp_network (password: 1234567890), then access the address: http://192.168.4.1/index.html
+        </section>
+
+        <section class="toolbar" aria-label="Действия с изображением">
+            <input type="file" class="sysInputFile d-none" id="File_Input" accept="image/*">
+            <button class="btn primary-action" id="Input_Button" type="button">Выбрать фото</button>
+            <button class="btn secondary-action crop-action" id="Crop_Button" type="button">Обрезка: вкл</button>
+            <button class="btn secondary-action" id="Rotate_Button" type="button">Повернуть: 0°</button>
+            <button class="btn send-action" id="Send_Button" type="button">Отправить на рамку</button>
+        </section>
+
+        <section id="tips" class="notice-panel" aria-live="polite">
+            <div id="tips-AP">
+                Настройки применятся после перезапуска. В AP-режиме подключитесь к Wi-Fi
+                <strong>esp_network</strong> с паролем <strong>1234567890</strong>, затем откройте
+                <strong>http://192.168.4.1/index.html</strong>.
             </div>
-            <div id="tips-STA" class="text-end d-none">
-                The settings will take effect after a restart. For STA mode, first configure the network using Mode 3, then access the address: http://esp32-s3-photopainter.local/index.html
+            <div id="tips-STA" class="d-none">
+                Настройки применятся после перезапуска. Для STA-режима сначала настройте сеть в режиме 3,
+                затем откройте <strong>http://esp32-s3-photopainter.local/index.html</strong>.
             </div>
-        </div>
-        <div class="d-flex m-auto gap-5 h-75 w-100">
-            <div class="flex-fill bg-white border border-success w-50 rounded-2 d-flex flex-column align-items-center">
-                <input type="file" class="sysInputFile d-none" id="File_Input">
-                <div class="fs-3 my-3">Original image</div>
-                <img src="placeholder.svg" class="m-auto" id="Image_Input" alt="Original_image" style="max-height: 80%; max-width: 80%;">
+        </section>
+
+        <section class="status-row" aria-live="polite">
+            <span id="upload_status">Готово к выбору изображения.</span>
+        </section>
+
+        <details class="device-panel" id="Device_Status_Panel">
+            <summary class="section-heading">
+                <div>
+                    <p class="section-kicker">Диагностика</p>
+                    <h2>Состояние рамки</h2>
+                </div>
+                <span class="summary-hint">Показать</span>
+            </summary>
+
+            <div class="device-panel-body">
+                <button class="btn secondary-action refresh-action" id="Refresh_Status_Button" type="button">Обновить данные</button>
+
+                <div class="metrics-grid">
+                    <article class="metric-card metric-card-main">
+                        <span class="metric-label">Батарея</span>
+                        <strong id="metric_battery">...</strong>
+                        <small id="metric_power">Откройте диагностику для обновления</small>
+                        <div class="battery-track" aria-hidden="true">
+                            <span id="battery_fill"></span>
+                        </div>
+                    </article>
+
+                    <article class="metric-card">
+                        <span class="metric-label">Сеть</span>
+                        <strong id="metric_network">...</strong>
+                        <small id="metric_address">Режим подключения рамки</small>
+                    </article>
+                </div>
             </div>
-            <div class="flex-fill bg-white border border-success w-50 rounded-2 d-flex flex-column align-items-center">
-                <div class="fs-3 my-3">Processed image</div>
-                <img src="placeholder.svg" class="m-auto" id="Image_Processed" alt="Processed_image" style="max-height: 80%; max-width: 80%;">
-            </div>
-        </div>
-    </div>
+        </details>
+
+        <section class="preview-grid" aria-label="Предпросмотр изображения">
+            <article class="preview-card">
+                <div class="preview-heading">
+                    <h2>Исходное изображение</h2>
+                    <span>До обработки</span>
+                </div>
+                <div class="image-stage">
+                    <img src="placeholder.svg" id="Image_Input" alt="Исходное изображение">
+                </div>
+            </article>
+
+            <article class="preview-card">
+                <div class="preview-heading">
+                    <h2>Готово для экрана</h2>
+                    <span>6 цветов, BMP при отправке</span>
+                </div>
+                <div class="image-stage">
+                    <img src="placeholder.svg" id="Image_Processed" alt="Обработанное изображение">
+                </div>
+            </article>
+        </section>
+    </main>
+
     <script src="bootstrap.min.js"></script>
     <script src="script.min.js"></script>
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
-
-
-

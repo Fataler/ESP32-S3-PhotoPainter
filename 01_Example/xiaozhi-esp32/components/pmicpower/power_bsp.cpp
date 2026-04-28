@@ -159,3 +159,17 @@ PmicRegisterConfig Custom_PmicGetBatteryInfo(void) {
     snprintf(config.batteryPercent, sizeof(config.batteryPercent), "Battery Percent : %d%%", battery_percent);
     return config;
 }
+
+PmicBatteryMetrics Custom_PmicGetBatteryMetrics(void) {
+    PmicBatteryMetrics metrics = {};
+    metrics.connected = axp2101.isBatteryConnect();
+    metrics.charging = axp2101.isCharging();
+    metrics.discharging = axp2101.isDischarge();
+    metrics.standby = axp2101.isStandby();
+    metrics.vbus_good = axp2101.isVbusGood();
+    metrics.charge_status = axp2101.getChargerStatus();
+    metrics.voltage_mv = axp2101.getBattVoltage();
+    metrics.percent = axp2101.getBatteryPercent();
+    metrics.available = metrics.connected || metrics.percent >= 0 || metrics.voltage_mv > 0;
+    return metrics;
+}

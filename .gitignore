@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Editor / IDE local state
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ESP-IDF / CMake generated output
+build/
+build*/
+managed_components/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+*.bin
+*.elf
+*.map
+
+# Local archives and temporary files
+tmp/
+*.log
+*.tmp

@@ -16,6 +16,9 @@ idf_component_register(
     esp_http_client
     espressif__mdns
     port_bsp
+    pmicpower
+    esp_app_format
+    spi_flash
     esp_wifi
     esp_http_server
     json
