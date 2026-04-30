@@ -7,6 +7,7 @@
 #include "display_bsp.h"
 #include "server_app.h"
 #include "button_bsp.h"
+#include "codec_bsp.h"
 #include "user_app.h"
 #include "traverse_nvs.h"
 
@@ -16,6 +17,37 @@ TraverseNvs *nvs_viewer = NULL;
 static const char *TAG = "NetWorkMode";
 static EventGroupHandle_t sleep_group;
 static uint8_t NetWorkMode = 0;     /*默认*/
+
+static void Network_mode_ready_beep_Task(void *arg) {
+    CodecPort audioPort(I2cBus);
+    if (audioPort.Codec_PlayInfoAudio()) {
+        const int sample_rate = 24000;
+        const int tone_hz = 1400;
+        const int duration_ms = 120;
+        const int total_frames = sample_rate * duration_ms / 1000;
+        const int period_frames = sample_rate / tone_hz;
+        const int16_t amplitude = 5000;
+        int16_t frames[128 * 2];
+
+        int frame_index = 0;
+        while (frame_index < total_frames) {
+            int frames_count = total_frames - frame_index;
+            if (frames_count > 128) {
+                frames_count = 128;
+            }
+            for (int i = 0; i < frames_count; i++) {
+                int phase = (frame_index + i) % period_frames;
+                int16_t sample = (phase < (period_frames / 2)) ? amplitude : -amplitude;
+                frames[i * 2] = sample;
+                frames[i * 2 + 1] = sample;
+            }
+            audioPort.Codec_PlayBackWrite(frames, frames_count * 2 * sizeof(int16_t));
+            frame_index += frames_count;
+        }
+        audioPort.Codec_ClosePlay();
+    }
+    vTaskDelete(NULL);
+}
 
 uint8_t Get_nvsNetworkMode(void) {
     esp_err_t ret;
@@ -62,7 +94,11 @@ static void Network_user_Task(void *arg) {
             if (pdTRUE == xSemaphoreTake(epaper_gui_semapHandle,2000)) {
                 xEventGroupSetBits(Green_led_Mode_queue, set_bit_button(6));
                 Green_led_arg = 1;
-                ePaperDisplay.EPD_SDcardBmpShakingColor("/sdcard/02_sys_ap_img/user_send.bmp",0,0);
+                char display_path[128] = {};
+                if (!ServerPort_TakePendingDisplayPath(display_path, sizeof(display_path))) {
+                    snprintf(display_path, sizeof(display_path), "%s", "/sdcard/02_sys_ap_img/user_send.bmp");
+                }
+                ePaperDisplay.EPD_SDcardBmpShakingColor(display_path,0,0);
                 ePaperDisplay.EPD_Display();  
                 xSemaphoreGive(epaper_gui_semapHandle); 
                 Green_led_arg = 0;
@@ -175,6 +211,7 @@ void User_Network_mode_app_init(void) {
         ServerPort_NetworkAPInit();
     }
     ServerPort_init(SDPort);                                                      
+    xTaskCreate(Network_mode_ready_beep_Task, "Network_mode_ready_beep_Task", 4 * 1024, NULL, 2, NULL);
     xEventGroupSetBits(Red_led_Mode_queue,set_bit_button(0)); 
     xTaskCreate(Network_user_Task, "Network_user_Task", 6 * 1024, NULL, 2, NULL);
     if(!NetWorkMode) {xTaskCreate(Network_sleep_Task, "Network_sleep_Task", 4 * 1024, NULL, 2, NULL);}

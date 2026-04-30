@@ -18,90 +18,243 @@
                     Выберите фото, проверьте 6-цветную подготовку и отправьте файл на e-paper экран.
                 </p>
             </div>
-            <div class="mode-panel" aria-label="Режим сети">
-                <span class="mode-label">Режим сети</span>
-                <div class="btn-group mode-toggle" role="group" aria-label="Выбор режима сети">
-                    <a href="#" data-mode="AP" class="btn active">AP</a>
-                    <a href="#" data-mode="STA" class="btn">STA</a>
-                </div>
-            </div>
-        </section>
-
-        <section class="toolbar" aria-label="Действия с изображением">
-            <input type="file" class="sysInputFile d-none" id="File_Input" accept="image/*">
-            <button class="btn primary-action" id="Input_Button" type="button">Выбрать фото</button>
-            <button class="btn secondary-action crop-action" id="Crop_Button" type="button">Обрезка: вкл</button>
-            <button class="btn secondary-action" id="Rotate_Button" type="button">Повернуть: 0°</button>
-            <button class="btn send-action" id="Send_Button" type="button">Отправить на рамку</button>
-        </section>
-
-        <section id="tips" class="notice-panel" aria-live="polite">
-            <div id="tips-AP">
-                Настройки применятся после перезапуска. В AP-режиме подключитесь к Wi-Fi
-                <strong>esp_network</strong> с паролем <strong>1234567890</strong>, затем откройте
-                <strong>http://192.168.4.1/index.html</strong>.
-            </div>
-            <div id="tips-STA" class="d-none">
-                Настройки применятся после перезапуска. Для STA-режима сначала настройте сеть в режиме 3,
-                затем откройте <strong>http://esp32-s3-photopainter.local/index.html</strong>.
-            </div>
         </section>
 
         <section class="status-row" aria-live="polite">
             <span id="upload_status">Готово к выбору изображения.</span>
         </section>
 
-        <details class="device-panel" id="Device_Status_Panel">
-            <summary class="section-heading">
-                <div>
-                    <p class="section-kicker">Диагностика</p>
-                    <h2>Состояние рамки</h2>
+        <nav class="app-nav" aria-label="Разделы админки">
+            <button class="app-nav-button active" type="button" data-screen="prepare">Подготовка</button>
+            <button class="app-nav-button" type="button" data-screen="collection">Коллекция</button>
+            <button class="app-nav-button" type="button" data-screen="settings">Настройки</button>
+        </nav>
+
+        <section class="app-screen active" data-screen-panel="prepare" aria-label="Подготовка изображения">
+            <section class="toolbar" aria-label="Подготовка изображения">
+                <input type="file" class="sysInputFile d-none" id="File_Input" accept="image/*">
+                <button class="btn primary-action" id="Input_Button" type="button">Выбрать фото</button>
+                <button class="btn secondary-action crop-action" id="Crop_Button" type="button">Обрезка: вкл</button>
+                <button class="btn secondary-action" id="Rotate_Button" type="button">Ориентация: авто</button>
+            </section>
+
+            <article class="mode-workspace live-panel" aria-label="Отправка на экран сейчас">
+                <div class="admin-heading">
+                    <div>
+                        <p class="section-kicker">Сейчас</p>
+                        <h2>Подготовить и отправить</h2>
+                    </div>
                 </div>
-                <span class="summary-hint">Показать</span>
-            </summary>
 
-            <div class="device-panel-body">
-                <button class="btn secondary-action refresh-action" id="Refresh_Status_Button" type="button">Обновить данные</button>
-
-                <div class="metrics-grid">
-                    <article class="metric-card metric-card-main">
-                        <span class="metric-label">Батарея</span>
-                        <strong id="metric_battery">...</strong>
-                        <small id="metric_power">Откройте диагностику для обновления</small>
-                        <div class="battery-track" aria-hidden="true">
-                            <span id="battery_fill"></span>
+                <section class="preview-grid" aria-label="Предпросмотр изображения">
+                    <article class="preview-card">
+                        <div class="preview-heading">
+                            <h2>Исходное изображение</h2>
+                            <span>До обработки</span>
+                        </div>
+                        <div class="image-stage">
+                            <img src="placeholder.svg" id="Image_Input" alt="Исходное изображение">
                         </div>
                     </article>
 
-                    <article class="metric-card">
-                        <span class="metric-label">Сеть</span>
-                        <strong id="metric_network">...</strong>
-                        <small id="metric_address">Режим подключения рамки</small>
+                    <article class="preview-card">
+                        <div class="preview-heading">
+                            <h2>Готово для экрана</h2>
+                            <span>6 цветов, BMP при отправке</span>
+                        </div>
+                        <label class="preset-select result-preset">
+                            <span>Пресет обработки</span>
+                            <select id="Process_Preset">
+                                <option value="auto">Авто</option>
+                                <option value="portrait">Портрет</option>
+                                <option value="landscape">Пейзаж</option>
+                                <option value="high_contrast">Максимум контраста</option>
+                                <option value="soft_dither">Мягкий dithering</option>
+                                <option value="no_dither">Без dithering</option>
+                            </select>
+                        </label>
+                        <div class="image-stage">
+                            <img src="placeholder.svg" id="Image_Processed" alt="Обработанное изображение">
+                        </div>
+                        <details class="advanced-panel">
+                            <summary>
+                                <span>Продвинутая кадрировка</span>
+                                <small>масштаб и сдвиг кадра</small>
+                            </summary>
+                            <section class="manual-crop-panel" aria-label="Ручная кадрировка">
+                                <label>
+                                    <span>Масштаб</span>
+                                    <input id="Crop_Zoom" type="range" min="0.70" max="2.20" step="0.01" value="1">
+                                </label>
+                                <label>
+                                    <span>Сдвиг X</span>
+                                    <input id="Crop_Offset_X" type="range" min="-1" max="1" step="0.01" value="0">
+                                </label>
+                                <label>
+                                    <span>Сдвиг Y</span>
+                                    <input id="Crop_Offset_Y" type="range" min="-1" max="1" step="0.01" value="0">
+                                </label>
+                                <button class="btn secondary-action" id="Crop_Reset_Button" type="button">Сброс кадра</button>
+                            </section>
+                        </details>
                     </article>
-                </div>
-            </div>
-        </details>
+                </section>
 
-        <section class="preview-grid" aria-label="Предпросмотр изображения">
-            <article class="preview-card">
-                <div class="preview-heading">
-                    <h2>Исходное изображение</h2>
-                    <span>До обработки</span>
-                </div>
-                <div class="image-stage">
-                    <img src="placeholder.svg" id="Image_Input" alt="Исходное изображение">
+                <div class="quick-actions">
+                    <button class="btn send-action" id="Send_Button" type="button">Отправить сейчас</button>
+                    <button class="btn library-action" id="Save_Library_Button" type="button">В коллекцию mode 1</button>
                 </div>
             </article>
+        </section>
 
-            <article class="preview-card">
-                <div class="preview-heading">
-                    <h2>Готово для экрана</h2>
-                    <span>6 цветов, BMP при отправке</span>
+        <section class="app-screen" data-screen-panel="collection" aria-label="Коллекция mode 1">
+            <article class="mode-workspace admin-panel" aria-label="Админка mode 1">
+                <div class="admin-heading">
+                    <div>
+                        <p class="section-kicker">Mode 1</p>
+                        <h2>Плейлист</h2>
+                    </div>
+                    <button class="btn secondary-action refresh-action" id="Refresh_Library_Button" type="button">Обновить</button>
                 </div>
-                <div class="image-stage">
-                    <img src="placeholder.svg" id="Image_Processed" alt="Обработанное изображение">
+
+                <div class="playlist-tools">
+                    <label class="search-field">
+                        <span>Поиск</span>
+                        <input id="Library_Search" type="search" placeholder="Имя файла">
+                    </label>
+                    <div class="library-stats" id="Library_Stats">0 файлов · 0 Б</div>
+                    <button class="btn secondary-action" id="Save_Playlist_Order_Button" type="button">Сохранить порядок</button>
+                    <button class="btn delete-action" id="Delete_Selected_Button" type="button" disabled>Удалить выбранные</button>
                 </div>
+
+                <div class="library-toolbar">
+                    <span class="library-hint">Можно перетаскивать карточки, использовать ↑ ↓ или выбрать несколько файлов для удаления.</span>
+                </div>
+
+                <div class="library-list" id="Library_List" aria-live="polite">
+                    <div class="empty-library">Список изображений ещё не загружен.</div>
+                </div>
+
+                <button class="btn secondary-action load-more-action" id="Load_More_Button" type="button">Показать ещё</button>
             </article>
+        </section>
+
+        <section class="app-screen" data-screen-panel="settings" aria-label="Настройки и диагностика">
+            <section class="mode-workspaces" aria-label="Настройки mode 1 и сети">
+                <article class="mode-workspace admin-panel" aria-label="Настройки mode 1">
+                    <div class="admin-heading">
+                        <div>
+                            <p class="section-kicker">Mode 1</p>
+                            <h2>Плейлист и таймер</h2>
+                        </div>
+                    </div>
+
+                    <div class="config-row">
+                        <label for="Timer_Input">Интервал обновления, секунд</label>
+                        <input id="Timer_Input" type="number" min="30" max="86400" step="30" value="300">
+                        <button class="btn primary-action" id="Save_Config_Button" type="button">Сохранить</button>
+                    </div>
+
+                    <div class="playlist-row">
+                        <label for="Playlist_Mode">Порядок показа</label>
+                        <select id="Playlist_Mode">
+                            <option value="sequential">По списку</option>
+                            <option value="random">Случайно</option>
+                        </select>
+                        <button class="btn secondary-action" id="Save_Playlist_Button" type="button">Сохранить плейлист</button>
+                    </div>
+
+                    <div class="last-image-row" aria-live="polite">
+                        <span>Последняя для mode 1</span>
+                        <strong id="Playlist_Last_Label">не выбрана</strong>
+                    </div>
+
+                    <div class="schedule-panel">
+                        <label class="schedule-toggle">
+                            <input id="Schedule_Enabled" type="checkbox">
+                            <span>Планировщик по времени суток</span>
+                        </label>
+                        <div class="schedule-grid">
+                            <label>
+                                <span>День с</span>
+                                <input id="Schedule_Day_Start" type="time" value="08:00">
+                            </label>
+                            <label>
+                                <span>Ночь с</span>
+                                <input id="Schedule_Night_Start" type="time" value="23:00">
+                            </label>
+                            <label>
+                                <span>Дневной интервал, сек</span>
+                                <input id="Schedule_Day_Timer" type="number" min="30" max="86400" step="30" value="300">
+                            </label>
+                        </div>
+                        <p class="library-hint">Ночью mode 1 не обновляет фото и спит до начала дня. Время берётся с браузера при сохранении.</p>
+                    </div>
+
+                    <div class="library-toolbar">
+                        <span class="library-hint">Папка: /sdcard/06_user_foundation_img</span>
+                    </div>
+                </article>
+
+                <article class="mode-workspace live-panel" aria-label="Настройки сети">
+                    <div class="admin-heading">
+                        <div>
+                            <p class="section-kicker">Сеть</p>
+                            <h2>AP / STA</h2>
+                        </div>
+                    </div>
+
+                    <div class="mode-panel" aria-label="Режим сети">
+                        <span class="mode-label">Режим сети</span>
+                        <div class="btn-group mode-toggle" role="group" aria-label="Выбор режима сети">
+                            <a href="#" data-mode="AP" class="btn active">AP</a>
+                            <a href="#" data-mode="STA" class="btn">STA</a>
+                        </div>
+                    </div>
+
+                    <div id="tips" class="notice-panel inline-notice" aria-live="polite">
+                        <div id="tips-AP">
+                            В AP-режиме подключитесь к Wi-Fi <strong>esp_network</strong> с паролем
+                            <strong>1234567890</strong>, затем откройте <strong>http://192.168.4.1/index.html</strong>.
+                        </div>
+                        <div id="tips-STA" class="d-none">
+                            Для STA сначала настройте сеть в режиме 3, затем откройте
+                            <strong>http://esp32-s3-photopainter.local/index.html</strong>.
+                        </div>
+                    </div>
+                </article>
+            </section>
+
+            <details class="device-panel" id="Device_Status_Panel">
+                <summary class="section-heading">
+                    <div>
+                        <p class="section-kicker">Диагностика</p>
+                        <h2>Состояние рамки</h2>
+                    </div>
+                    <span class="summary-hint">Показать</span>
+                </summary>
+
+                <div class="device-panel-body">
+                    <button class="btn secondary-action refresh-action" id="Refresh_Status_Button" type="button">Обновить данные</button>
+
+                    <div class="metrics-grid">
+                        <article class="metric-card metric-card-main">
+                            <span class="metric-label">Батарея</span>
+                            <strong id="metric_battery">...</strong>
+                            <small id="metric_power">Откройте диагностику для обновления</small>
+                            <div class="battery-track" aria-hidden="true">
+                                <span id="battery_fill"></span>
+                            </div>
+                        </article>
+
+                        <article class="metric-card">
+                            <span class="metric-label">Сеть</span>
+                            <strong id="metric_network">...</strong>
+                            <small id="metric_address">Режим подключения рамки</small>
+                        </article>
+                    </div>
+                </div>
+            </details>
         </section>
     </main>
 

@@ -54,7 +54,7 @@ CodecPort::~CodecPort() {
 uint8_t CodecPort::Codec_PlayInfoAudio() {
     esp_codec_dev_set_out_vol(playback, 100.0); //Set the volume to 100.
     esp_codec_dev_sample_info_t fs = {};
-    fs.sample_rate                 = 16000;
+    fs.sample_rate                 = SAMPLE_RATE;
     fs.channel                     = 2;
     fs.bits_per_sample             = 16;
     int     err                    = esp_codec_dev_open(playback, &fs); //Start playback

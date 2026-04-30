@@ -1,14 +1,21 @@
 #include <stdio.h>
+#include <ctype.h>
+#include <dirent.h>
 #include <esp_check.h>
 #include <esp_http_server.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <esp_wifi.h>
+#include <strings.h>
+#include <sys/stat.h>
+#include <sys/unistd.h>
 #include "server_app.h"
 #include "sdcard_bsp.h"
 #include "button_bsp.h"
 #include "mdns.h"
 #include "user_app.h"
 #include "power_bsp.h"
+#include "ArduinoJson.h"
 
 static const char *TAG = "server_bsp";
 
@@ -20,12 +27,143 @@ static const char *TAG = "server_bsp";
 #define BSP_ESP_WIFI_PASS "1234567890"
 #define BSP_ESP_WIFI_CHANNEL 1
 #define BSP_MAX_STA_CONN 4
+#define USER_FOUNDATION_DIR "/sdcard/06_user_foundation_img"
+#define USER_THUMB_DIR USER_FOUNDATION_DIR "/.thumbs"
+#define USER_CONFIG_PATH USER_FOUNDATION_DIR "/config.txt"
 
 EventGroupHandle_t ServerPortGroups;
 static CustomSDPort *SDPort_ = NULL;
 static uint8_t netMode = 0;   //Default AP mode
+static char pending_display_path[128] = {};
+static bool pending_display_path_ready = false;
 const char staresp[] = "1";
 const char apresp[] = "0";
+
+static bool is_supported_image_name(const char *name) {
+    const char *ext = strrchr(name, '.');
+    if (ext == NULL) {
+        return false;
+    }
+    return strcasecmp(ext, ".bmp") == 0 || strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0 || strcasecmp(ext, ".png") == 0;
+}
+
+static bool contains_ignore_case(const char *text, const char *needle) {
+    if (needle == NULL || needle[0] == '\0') {
+        return true;
+    }
+    if (text == NULL) {
+        return false;
+    }
+    size_t needle_len = strlen(needle);
+    for (const char *p = text; *p != '\0'; p++) {
+        if (strncasecmp(p, needle, needle_len) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void sanitize_filename(const char *input, char *output, size_t output_size) {
+    if (output_size == 0) {
+        return;
+    }
+
+    size_t pos = 0;
+    const char *base = strrchr(input ? input : "", '/');
+    input = base ? base + 1 : input;
+
+    for (size_t i = 0; input != NULL && input[i] != '\0' && pos + 1 < output_size; i++) {
+        char c = input[i];
+        if (isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-') {
+            output[pos++] = c;
+        } else {
+            output[pos++] = '_';
+        }
+    }
+
+    output[pos] = '\0';
+    if (pos == 0 || strstr(output, "..") != NULL || !is_supported_image_name(output)) {
+        snprintf(output, output_size, "web_%lld.bmp", (long long)(esp_timer_get_time() / 1000));
+    }
+}
+
+static bool make_foundation_path(const char *filename, char *path, size_t path_size) {
+    char clean_name[64];
+    sanitize_filename(filename, clean_name, sizeof(clean_name));
+    if (!is_supported_image_name(clean_name)) {
+        return false;
+    }
+    int written = snprintf(path, path_size, "%s/%s", USER_FOUNDATION_DIR, clean_name);
+    return written > 0 && (size_t)written < path_size;
+}
+
+static bool make_existing_foundation_path(const char *filename, char *path, size_t path_size) {
+    if (filename == NULL || filename[0] == '\0' || strstr(filename, "..") != NULL ||
+        strchr(filename, '/') != NULL || strchr(filename, '\\') != NULL || !is_supported_image_name(filename)) {
+        return false;
+    }
+    int written = snprintf(path, path_size, "%s/%s", USER_FOUNDATION_DIR, filename);
+    return written > 0 && (size_t)written < path_size;
+}
+
+static bool make_thumb_path(const char *filename, char *path, size_t path_size) {
+    if (filename == NULL || filename[0] == '\0' || strstr(filename, "..") != NULL ||
+        strchr(filename, '/') != NULL || strchr(filename, '\\') != NULL || !is_supported_image_name(filename)) {
+        return false;
+    }
+    int written = snprintf(path, path_size, "%s/%s.jpg", USER_THUMB_DIR, filename);
+    return written > 0 && (size_t)written < path_size;
+}
+
+static esp_err_t read_request_body(httpd_req_t *req, char *buf, size_t buf_size) {
+    if (buf_size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    size_t remaining = req->content_len;
+    if (remaining >= buf_size) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    size_t offset = 0;
+    while (remaining > 0) {
+        int ret = httpd_req_recv(req, buf + offset, remaining);
+        if (ret <= 0) {
+            return ESP_FAIL;
+        }
+        offset += ret;
+        remaining -= ret;
+    }
+    buf[offset] = '\0';
+    return ESP_OK;
+}
+
+static bool append_json_string(char *response, size_t response_size, size_t *used, const char *value) {
+    if (*used + 2 >= response_size) {
+        return false;
+    }
+    response[(*used)++] = '"';
+    for (size_t i = 0; value != NULL && value[i] != '\0'; i++) {
+        char c = value[i];
+        if (c == '"' || c == '\\') {
+            if (*used + 2 >= response_size) {
+                return false;
+            }
+            response[(*used)++] = '\\';
+            response[(*used)++] = c;
+        } else {
+            if (*used + 1 >= response_size) {
+                return false;
+            }
+            response[(*used)++] = c;
+        }
+    }
+    if (*used + 1 >= response_size) {
+        return false;
+    }
+    response[(*used)++] = '"';
+    response[*used] = '\0';
+    return true;
+}
 
 static const char *charge_status_to_string(uint8_t status) {
     switch (status) {
@@ -37,6 +175,17 @@ static const char *charge_status_to_string(uint8_t status) {
         case 5: return "not_charging";
         default: return "unknown";
     }
+}
+
+static void set_connection_close(httpd_req_t *req) {
+    httpd_resp_set_hdr(req, "Connection", "close");
+}
+
+static esp_err_t close_session_after_send(httpd_req_t *req, esp_err_t err) {
+    if (err == ESP_OK) {
+        httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
+    }
+    return err;
 }
 
 static esp_err_t send_device_status(httpd_req_t *req) {
@@ -72,15 +221,25 @@ static esp_err_t send_device_status(httpd_req_t *req) {
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    set_connection_close(req);
     esp_err_t err = httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
     heap_caps_free(response);
-    return err;
+    return close_session_after_send(req, err);
 }
 
 /*callback fun*/
 esp_err_t static_resource_unified_handler(httpd_req_t *req);
 esp_err_t device_status_handler(httpd_req_t *req);
 esp_err_t receive_data_redirect_handler(httpd_req_t *req);
+esp_err_t admin_images_handler(httpd_req_t *req);
+esp_err_t admin_image_get_handler(httpd_req_t *req);
+esp_err_t admin_thumb_get_handler(httpd_req_t *req);
+esp_err_t admin_thumb_upload_handler(httpd_req_t *req);
+esp_err_t admin_image_upload_handler(httpd_req_t *req);
+esp_err_t admin_image_delete_handler(httpd_req_t *req);
+esp_err_t admin_image_set_now_handler(httpd_req_t *req);
+esp_err_t admin_config_get_handler(httpd_req_t *req);
+esp_err_t admin_config_post_handler(httpd_req_t *req);
 esp_err_t unknown_uri_handler(httpd_req_t *req);
 void sta_wifi_event_callback(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 void ap_wifi_event_callback(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
@@ -118,6 +277,7 @@ esp_err_t static_resource_unified_handler(httpd_req_t *req) {
     size_t str_len       = 0;
     const char *uri = req->uri;                                     // The desired URI
     ESP_LOGI(TAG, "Return directly URL:%s",uri);
+    set_connection_close(req);
 
     if(strstr(uri,"index.html")) { // /index.html
         resp_str      = (char *) heap_caps_malloc(SEND_LEN_MAX + 1, MALLOC_CAP_SPIRAM);
@@ -203,13 +363,522 @@ esp_err_t static_resource_unified_handler(httpd_req_t *req) {
         customfree(resp_str);
         return ESP_FAIL;
     }
-    httpd_resp_send_chunk(req, NULL, 0);                    // Send empty data to indicate completion of transmission
+    esp_err_t err = httpd_resp_send_chunk(req, NULL, 0);    // Send empty data to indicate completion of transmission
     customfree(resp_str);
-    return ESP_OK;
+    return close_session_after_send(req, err);
 }
 
 esp_err_t device_status_handler(httpd_req_t *req) {
     return send_device_status(req);
+}
+
+esp_err_t admin_images_handler(httpd_req_t *req) {
+    char query[192] = {};
+    char value[64] = {};
+    int offset = 0;
+    int limit = 24;
+    char search[64] = {};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        if (httpd_query_key_value(query, "offset", value, sizeof(value)) == ESP_OK) {
+            offset = atoi(value);
+        }
+        if (httpd_query_key_value(query, "limit", value, sizeof(value)) == ESP_OK) {
+            limit = atoi(value);
+        }
+        httpd_query_key_value(query, "q", search, sizeof(search));
+    }
+    if (offset < 0) {
+        offset = 0;
+    }
+    if (limit <= 0 || limit > 48) {
+        limit = 24;
+    }
+
+    DIR *dir = opendir(USER_FOUNDATION_DIR);
+    if (dir == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Cannot open image directory");
+        return ESP_FAIL;
+    }
+
+    char *response = (char *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+    if (response == NULL) {
+        closedir(dir);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No memory");
+        return ESP_ERR_NO_MEM;
+    }
+
+    int matched = 0;
+    long total_size = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_type == DT_DIR || !is_supported_image_name(entry->d_name) || strstr(entry->d_name, "sys_decode.bmp") || !contains_ignore_case(entry->d_name, search)) {
+            continue;
+        }
+
+        char path[128];
+        if (!make_existing_foundation_path(entry->d_name, path, sizeof(path))) {
+            continue;
+        }
+
+        struct stat st = {};
+        long size = 0;
+        if (stat(path, &st) == 0) {
+            size = st.st_size;
+        }
+        total_size += size;
+        matched++;
+    }
+
+    rewinddir(dir);
+    size_t used = snprintf(response, 4096, "{\"ok\":true,\"dir\":\"%s\",\"offset\":%d,\"limit\":%d,\"total\":%d,\"totalSize\":%ld,\"images\":[", USER_FOUNDATION_DIR, offset, limit, matched, total_size);
+    bool first = true;
+    int seen = 0;
+    int emitted = 0;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_type == DT_DIR || !is_supported_image_name(entry->d_name) || strstr(entry->d_name, "sys_decode.bmp") || !contains_ignore_case(entry->d_name, search)) {
+            continue;
+        }
+
+        char path[128];
+        if (!make_existing_foundation_path(entry->d_name, path, sizeof(path))) {
+            continue;
+        }
+
+        struct stat st = {};
+        long size = 0;
+        if (stat(path, &st) == 0) {
+            size = st.st_size;
+        }
+        if (seen++ < offset) {
+            continue;
+        }
+        if (emitted >= limit) {
+            continue;
+        }
+
+        int written = snprintf(response + used, 4096 - used, "%s{\"name\":", first ? "" : ",");
+        if (written < 0 || used + written >= 4096) {
+            break;
+        }
+        used += written;
+        if (!append_json_string(response, 4096, &used, entry->d_name)) {
+            break;
+        }
+        written = snprintf(response + used, 4096 - used, ",\"size\":%ld}", size);
+        if (written < 0 || used + written >= 4096) {
+            break;
+        }
+        used += written;
+        first = false;
+        emitted++;
+    }
+    closedir(dir);
+    snprintf(response + used, 4096 - used, "]}");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    set_connection_close(req);
+    esp_err_t err = httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+    heap_caps_free(response);
+    return close_session_after_send(req, err);
+}
+
+esp_err_t admin_image_get_handler(httpd_req_t *req) {
+    char query[128] = {};
+    char filename[64] = {};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "name", filename, sizeof(filename)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing filename");
+        return ESP_FAIL;
+    }
+
+    char path[128];
+    if (!make_existing_foundation_path(filename, path, sizeof(path))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
+        return ESP_FAIL;
+    }
+
+    const char *ext = strrchr(filename, '.');
+    if (ext && strcasecmp(ext, ".bmp") == 0) {
+        httpd_resp_set_type(req, "image/bmp");
+    } else if (ext && (strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0)) {
+        httpd_resp_set_type(req, "image/jpeg");
+    } else if (ext && strcasecmp(ext, ".png") == 0) {
+        httpd_resp_set_type(req, "image/png");
+    } else {
+        httpd_resp_set_type(req, "application/octet-stream");
+    }
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    set_connection_close(req);
+
+    char *buf = (char *)heap_caps_malloc(SEND_LEN_MAX, MALLOC_CAP_SPIRAM);
+    if (buf == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No memory");
+        return ESP_ERR_NO_MEM;
+    }
+
+    size_t offset = 0;
+    while (1) {
+        int read_len = SDPort_->SDPort_ReadOffset(path, buf, SEND_LEN_MAX, offset);
+        if (read_len <= 0) {
+            break;
+        }
+        if (httpd_resp_send_chunk(req, buf, read_len) != ESP_OK) {
+            heap_caps_free(buf);
+            return ESP_FAIL;
+        }
+        offset += read_len;
+    }
+
+    heap_caps_free(buf);
+    return close_session_after_send(req, httpd_resp_send_chunk(req, NULL, 0));
+}
+
+esp_err_t admin_thumb_get_handler(httpd_req_t *req) {
+    char query[128] = {};
+    char filename[64] = {};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "name", filename, sizeof(filename)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing filename");
+        return ESP_FAIL;
+    }
+
+    char path[140];
+    if (!make_thumb_path(filename, path, sizeof(path))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
+        return ESP_FAIL;
+    }
+
+    struct stat st = {};
+    if (stat(path, &st) != 0) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Thumbnail not found");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    set_connection_close(req);
+
+    char *buf = (char *)heap_caps_malloc(SEND_LEN_MAX, MALLOC_CAP_SPIRAM);
+    if (buf == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No memory");
+        return ESP_ERR_NO_MEM;
+    }
+
+    size_t offset = 0;
+    while (1) {
+        int read_len = SDPort_->SDPort_ReadOffset(path, buf, SEND_LEN_MAX, offset);
+        if (read_len <= 0) {
+            break;
+        }
+        if (httpd_resp_send_chunk(req, buf, read_len) != ESP_OK) {
+            heap_caps_free(buf);
+            return ESP_FAIL;
+        }
+        offset += read_len;
+    }
+
+    heap_caps_free(buf);
+    return close_session_after_send(req, httpd_resp_send_chunk(req, NULL, 0));
+}
+
+esp_err_t admin_thumb_upload_handler(httpd_req_t *req) {
+    char query[128] = {};
+    char filename[64] = {};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "name", filename, sizeof(filename)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing filename");
+        return ESP_FAIL;
+    }
+
+    char path[140];
+    if (!make_thumb_path(filename, path, sizeof(path))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
+        return ESP_FAIL;
+    }
+
+    mkdir(USER_THUMB_DIR, 0775);
+
+    char *buf = (char *) heap_caps_malloc(READ_LEN_MAX, MALLOC_CAP_SPIRAM);
+    if (buf == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No memory");
+        return ESP_ERR_NO_MEM;
+    }
+
+    SDPort_->SDPort_WriteOffset(path, NULL, 0, 0);
+    size_t remaining = req->content_len;
+    size_t written_total = 0;
+    while (remaining > 0) {
+        int ret = httpd_req_recv(req, buf, ServerPort_MIN(remaining, READ_LEN_MAX));
+        if (ret <= 0) {
+            heap_caps_free(buf);
+            httpd_resp_send_408(req);
+            return ESP_FAIL;
+        }
+        int written = SDPort_->SDPort_WriteOffset(path, buf, ret, 1);
+        if (written != ret) {
+            heap_caps_free(buf);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD write failed");
+            return ESP_FAIL;
+        }
+        written_total += written;
+        remaining -= ret;
+    }
+    heap_caps_free(buf);
+
+    char response[96];
+    snprintf(response, sizeof(response), "{\"ok\":true,\"size\":%lu}", (unsigned long)written_total);
+    httpd_resp_set_type(req, "application/json");
+    set_connection_close(req);
+    return close_session_after_send(req, httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN));
+}
+
+esp_err_t admin_image_upload_handler(httpd_req_t *req) {
+    char query[128] = {};
+    char filename[64] = {};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        httpd_query_key_value(query, "name", filename, sizeof(filename));
+    }
+    if (filename[0] == '\0') {
+        snprintf(filename, sizeof(filename), "web_%lld.bmp", (long long)(esp_timer_get_time() / 1000));
+    }
+
+    char path[128];
+    if (!make_foundation_path(filename, path, sizeof(path))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
+        return ESP_FAIL;
+    }
+
+    char *buf = (char *) heap_caps_malloc(READ_LEN_MAX, MALLOC_CAP_SPIRAM);
+    if (buf == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No memory");
+        return ESP_ERR_NO_MEM;
+    }
+
+    SDPort_->SDPort_WriteOffset(path, NULL, 0, 0);
+    size_t remaining = req->content_len;
+    size_t written_total = 0;
+    while (remaining > 0) {
+        int ret = httpd_req_recv(req, buf, ServerPort_MIN(remaining, READ_LEN_MAX));
+        if (ret <= 0) {
+            heap_caps_free(buf);
+            httpd_resp_send_408(req);
+            return ESP_FAIL;
+        }
+        int written = SDPort_->SDPort_WriteOffset(path, buf, ret, 1);
+        if (written != ret) {
+            heap_caps_free(buf);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD write failed");
+            return ESP_FAIL;
+        }
+        written_total += written;
+        remaining -= ret;
+    }
+    heap_caps_free(buf);
+
+    char response[160];
+    snprintf(response, sizeof(response), "{\"ok\":true,\"name\":\"%s\",\"size\":%lu}", strrchr(path, '/') + 1, (unsigned long)written_total);
+    httpd_resp_set_type(req, "application/json");
+    set_connection_close(req);
+    return close_session_after_send(req, httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN));
+}
+
+esp_err_t admin_image_delete_handler(httpd_req_t *req) {
+    char body[160];
+    if (read_request_body(req, body, sizeof(body)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request body");
+        return ESP_FAIL;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, body)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    const char *name = doc["name"];
+    char path[128];
+    if (name == NULL || !make_existing_foundation_path(name, path, sizeof(path))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
+        return ESP_FAIL;
+    }
+
+    if (unlink(path) != 0) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+        return ESP_FAIL;
+    }
+    if (make_thumb_path(name, path, sizeof(path))) {
+        unlink(path);
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    set_connection_close(req);
+    return close_session_after_send(req, httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN));
+}
+
+esp_err_t admin_image_set_now_handler(httpd_req_t *req) {
+    char body[160];
+    if (read_request_body(req, body, sizeof(body)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request body");
+        return ESP_FAIL;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, body)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    const char *name = doc["name"];
+    char source_path[128];
+    if (name == NULL || !make_existing_foundation_path(name, source_path, sizeof(source_path))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
+        return ESP_FAIL;
+    }
+
+    struct stat st = {};
+    if (stat(source_path, &st) != 0) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+        return ESP_FAIL;
+    }
+
+    snprintf(pending_display_path, sizeof(pending_display_path), "%s", source_path);
+    pending_display_path_ready = true;
+
+    netMode = Get_CurrentlyNetworkMode();
+    xEventGroupSetBits(ServerPortGroups, (0x1UL << 2));
+
+    char response[160];
+    snprintf(response, sizeof(response), "{\"ok\":true,\"name\":\"%s\",\"size\":%lu}", name, (unsigned long)st.st_size);
+    httpd_resp_set_type(req, "application/json");
+    set_connection_close(req);
+    return close_session_after_send(req, httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN));
+}
+
+esp_err_t admin_config_get_handler(httpd_req_t *req) {
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+    if (buffer == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No memory");
+        return ESP_ERR_NO_MEM;
+    }
+
+    int timer = 300;
+    JsonDocument doc;
+    int len = SDPort_->SDPort_ReadOffset(USER_CONFIG_PATH, buffer, 4095, 0);
+    if (len > 0) {
+        buffer[len] = '\0';
+        if (!deserializeJson(doc, (const char *)buffer)) {
+            timer = doc["timer"] | timer;
+        }
+    }
+
+    JsonDocument response_doc;
+    response_doc["ok"] = true;
+    response_doc["timer"] = timer;
+    response_doc["order"] = doc["order"] | "sequential";
+    response_doc["last"] = doc["last"] | "";
+    if (doc["schedule"].is<JsonObject>()) {
+        response_doc["schedule"] = doc["schedule"];
+    }
+    JsonArray playlist = response_doc["playlist"].to<JsonArray>();
+    if (doc["playlist"].is<JsonArray>()) {
+        for (const char *name : doc["playlist"].as<JsonArray>()) {
+            if (name != NULL) {
+                playlist.add(name);
+            }
+        }
+    }
+
+    size_t out_len = serializeJson(response_doc, (char *)buffer, 4096);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    set_connection_close(req);
+    esp_err_t err = httpd_resp_send(req, (char *)buffer, out_len);
+    heap_caps_free(buffer);
+    return close_session_after_send(req, err);
+}
+
+esp_err_t admin_config_post_handler(httpd_req_t *req) {
+    char body[4096];
+    if (read_request_body(req, body, sizeof(body)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request body");
+        return ESP_FAIL;
+    }
+
+    JsonDocument patch_doc;
+    if (deserializeJson(patch_doc, body)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    int timer = patch_doc["timer"] | 0;
+    if (timer < 30 || timer > 86400) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Timer must be 30..86400 seconds");
+        return ESP_FAIL;
+    }
+
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+    if (buffer == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No memory");
+        return ESP_ERR_NO_MEM;
+    }
+
+    JsonDocument config_doc;
+    int len = SDPort_->SDPort_ReadOffset(USER_CONFIG_PATH, buffer, 4095, 0);
+    if (len > 0) {
+        buffer[len] = '\0';
+        deserializeJson(config_doc, (const char *)buffer);
+    }
+    config_doc["timer"] = timer;
+    const char *order = patch_doc["order"] | "sequential";
+    config_doc["order"] = strcmp(order, "random") == 0 ? "random" : "sequential";
+    if (patch_doc["playlist"].is<JsonArray>()) {
+        config_doc["playlist"].clear();
+        JsonArray playlist = config_doc["playlist"].to<JsonArray>();
+        for (const char *name : patch_doc["playlist"].as<JsonArray>()) {
+            if (name != NULL && make_existing_foundation_path(name, (char *)buffer, 4096)) {
+                playlist.add(name);
+            }
+        }
+    }
+    const char *last = patch_doc["last"];
+    if (last != NULL) {
+        if (last[0] == '\0') {
+            config_doc["last"] = "";
+        } else if (make_existing_foundation_path(last, (char *)buffer, 4096)) {
+            config_doc["last"] = last;
+        }
+    }
+    if (patch_doc["schedule"].is<JsonObject>()) {
+        JsonObject schedule_in = patch_doc["schedule"].as<JsonObject>();
+        JsonObject schedule = config_doc["schedule"].to<JsonObject>();
+        schedule["enabled"] = schedule_in["enabled"] | false;
+        schedule["dayStart"] = schedule_in["dayStart"] | "08:00";
+        schedule["nightStart"] = schedule_in["nightStart"] | "23:00";
+        int day_timer = schedule_in["dayTimer"] | timer;
+        if (day_timer < 30 || day_timer > 86400) {
+            day_timer = timer;
+        }
+        schedule["dayTimer"] = day_timer;
+        schedule["nightMode"] = "sleep_until_day";
+        schedule["timezoneOffsetMinutes"] = schedule_in["timezoneOffsetMinutes"] | 0;
+        schedule["savedEpoch"] = schedule_in["savedEpoch"] | 0;
+        schedule["savedMillis"] = (long long)(esp_timer_get_time() / 1000);
+    }
+
+    size_t out_len = serializeJsonPretty(config_doc, (char *)buffer, 4096);
+    if (out_len == 0 || SDPort_->SDPort_WriteFile(USER_CONFIG_PATH, buffer, out_len) != ESP_OK) {
+        heap_caps_free(buffer);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Config write failed");
+        return ESP_FAIL;
+    }
+    heap_caps_free(buffer);
+
+    char response[160];
+    snprintf(response, sizeof(response), "{\"ok\":true,\"timer\":%d,\"order\":\"%s\"}", timer, config_doc["order"].as<const char *>());
+    httpd_resp_set_type(req, "application/json");
+    set_connection_close(req);
+    return close_session_after_send(req, httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN));
 }
 
 esp_err_t receive_data_redirect_handler(httpd_req_t *req) {
@@ -251,16 +920,19 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req) {
         }
     }
     xEventGroupSetBits(ServerPortGroups, (0x1UL << 1)); 
+    esp_err_t resp_err = ESP_OK;
     if ((sdcard_len + 1) == req->content_len) {
-        httpd_resp_send(req, "Data verification successful", strlen("Data verification successful"));
+        set_connection_close(req);
+        resp_err = httpd_resp_send(req, "Data verification successful", strlen("Data verification successful"));
         xEventGroupSetBits(ServerPortGroups, (0x1UL << 2));
     } else {
         httpd_resp_send_408(req);
         xEventGroupSetBits(ServerPortGroups, (0x1UL << 3));
+        resp_err = ESP_FAIL;
     } 
     ESP_LOGW(TAG,"netMode:%d",netMode);
     customfree(buf);
-    return ESP_OK;
+    return close_session_after_send(req, resp_err);
 }
 
 esp_err_t unknown_uri_handler(httpd_req_t *req) {
@@ -341,6 +1013,7 @@ void ServerPort_init(CustomSDPort *SDPort) {
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn   = httpd_uri_match_wildcard; /*Wildcard enabling*/
+    config.max_uri_handlers = 16;
     config.stack_size     = 8192;
     ESP_ERROR_CHECK(httpd_start(&server, &config));
 
@@ -349,6 +1022,60 @@ void ServerPort_init(CustomSDPort *SDPort) {
     uri_config.uri         = "/DeviceStatus";
     uri_config.method      = HTTP_GET;
     uri_config.handler     = device_status_handler;
+    uri_config.user_ctx    = NULL;
+    httpd_register_uri_handler(server, &uri_config);
+
+    uri_config.uri         = "/AdminImages";
+    uri_config.method      = HTTP_GET;
+    uri_config.handler     = admin_images_handler;
+    uri_config.user_ctx    = NULL;
+    httpd_register_uri_handler(server, &uri_config);
+
+    uri_config.uri         = "/AdminImage";
+    uri_config.method      = HTTP_GET;
+    uri_config.handler     = admin_image_get_handler;
+    uri_config.user_ctx    = NULL;
+    httpd_register_uri_handler(server, &uri_config);
+
+    uri_config.uri         = "/AdminThumb";
+    uri_config.method      = HTTP_GET;
+    uri_config.handler     = admin_thumb_get_handler;
+    uri_config.user_ctx    = NULL;
+    httpd_register_uri_handler(server, &uri_config);
+
+    uri_config.uri         = "/AdminThumbUpload";
+    uri_config.method      = HTTP_POST;
+    uri_config.handler     = admin_thumb_upload_handler;
+    uri_config.user_ctx    = NULL;
+    httpd_register_uri_handler(server, &uri_config);
+
+    uri_config.uri         = "/AdminImageUpload";
+    uri_config.method      = HTTP_POST;
+    uri_config.handler     = admin_image_upload_handler;
+    uri_config.user_ctx    = NULL;
+    httpd_register_uri_handler(server, &uri_config);
+
+    uri_config.uri         = "/AdminImageDelete";
+    uri_config.method      = HTTP_POST;
+    uri_config.handler     = admin_image_delete_handler;
+    uri_config.user_ctx    = NULL;
+    httpd_register_uri_handler(server, &uri_config);
+
+    uri_config.uri         = "/AdminImageSetNow";
+    uri_config.method      = HTTP_POST;
+    uri_config.handler     = admin_image_set_now_handler;
+    uri_config.user_ctx    = NULL;
+    httpd_register_uri_handler(server, &uri_config);
+
+    uri_config.uri         = "/AdminConfig";
+    uri_config.method      = HTTP_GET;
+    uri_config.handler     = admin_config_get_handler;
+    uri_config.user_ctx    = NULL;
+    httpd_register_uri_handler(server, &uri_config);
+
+    uri_config.uri         = "/AdminConfig";
+    uri_config.method      = HTTP_POST;
+    uri_config.handler     = admin_config_post_handler;
     uri_config.user_ctx    = NULL;
     httpd_register_uri_handler(server, &uri_config);
 
@@ -375,6 +1102,17 @@ void ServerPort_SetNetworkSleep(void) {
     esp_wifi_stop();
     esp_wifi_deinit();
     vTaskDelay(pdMS_TO_TICKS(500));
+}
+
+bool ServerPort_TakePendingDisplayPath(char *path, size_t path_size) {
+    if (path == NULL || path_size == 0 || !pending_display_path_ready) {
+        return false;
+    }
+
+    snprintf(path, path_size, "%s", pending_display_path);
+    pending_display_path[0] = '\0';
+    pending_display_path_ready = false;
+    return true;
 }
 
 uint8_t Get_NetworkMode(void) {

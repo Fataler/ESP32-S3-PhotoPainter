@@ -213,7 +213,7 @@ char *BaseAIModel::BaseAIModel_GetImgName() {
 }
 
 BaseAIModelConfig_t* BaseAIModel::BaseAIModel_SdcardReadAIModelConfig() {
-    uint8_t *sdcard_buffer = (uint8_t *)malloc(1024);
+    uint8_t *sdcard_buffer = (uint8_t *)malloc(4096);
     assert(sdcard_buffer);
     if(SDPort_->SDPort_ReadFile("/sdcard/06_user_foundation_img/config.txt", sdcard_buffer, NULL) != ESP_OK) {
         free(sdcard_buffer);
