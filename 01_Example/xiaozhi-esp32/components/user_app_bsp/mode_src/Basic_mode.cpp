@@ -8,6 +8,7 @@
 #include <esp_random.h>
 #include "user_app.h"
 #include "button_bsp.h"
+#include "codec_bsp.h"
 #include "ai_app.h"
 #include "list.h"
 #include "ArduinoJson.h"
@@ -22,8 +23,41 @@ static RTC_DATA_ATTR bool basic_rtc_epoch_valid = false;
 static uint8_t           Basic_sleep_arg = 0; // Parameters for low-power tasks
 static SemaphoreHandle_t sleep_Semp;          // Binary call low-power task 
 static uint8_t           wakeup_basic_flag = 0;
+static bool              basic_prefer_last_on_first_update = false;
 static list_t* ListHost;
+static const char *TAG = "BasicMode";
 static const char *BasicConfigPath = "/sdcard/06_user_foundation_img/config.txt";
+
+static void mode1_ready_beep_task(void *arg) {
+    CodecPort audioPort(I2cBus);
+    if (audioPort.Codec_PlayInfoAudio()) {
+        const int sample_rate = 24000;
+        const int tone_hz = 1700;
+        const int duration_ms = 90;
+        const int total_frames = sample_rate * duration_ms / 1000;
+        const int period_frames = sample_rate / tone_hz;
+        const int16_t amplitude = 4500;
+        int16_t frames[128 * 2];
+
+        int frame_index = 0;
+        while (frame_index < total_frames) {
+            int frames_count = total_frames - frame_index;
+            if (frames_count > 128) {
+                frames_count = 128;
+            }
+            for (int i = 0; i < frames_count; i++) {
+                int phase = (frame_index + i) % period_frames;
+                int16_t sample = (phase < (period_frames / 2)) ? amplitude : -amplitude;
+                frames[i * 2] = sample;
+                frames[i * 2 + 1] = sample;
+            }
+            audioPort.Codec_PlayBackWrite(frames, frames_count * 2 * sizeof(int16_t));
+            frame_index += frames_count;
+        }
+        audioPort.Codec_ClosePlay();
+    }
+    vTaskDelete(NULL);
+}
 
 static const char *get_basename(const char *path) {
     const char *slash = strrchr(path, '/');
@@ -159,6 +193,9 @@ static void write_last_image_name(const char *name) {
     JsonDocument doc;
     read_basic_config(doc);
     doc["last"] = name;
+    doc["current"] = name;
+    doc["skipCurrentOnce"] = true;
+    doc.remove("next");
     if (!doc["timer"].is<int>()) {
         doc["timer"] = basic_rtc_set_time;
     }
@@ -174,15 +211,34 @@ static void write_last_image_name(const char *name) {
     heap_caps_free(buffer);
 }
 
-static list_node_t *select_playlist_node(JsonDocument &doc) {
+static bool current_image_is_last(JsonDocument &doc) {
+    const char *last = doc["last"] | "";
+    const char *current = doc["current"] | "";
+    return (doc["skipCurrentOnce"] | false) && last[0] != '\0' && strcmp(last, current) == 0 && find_node_by_name(last) != NULL;
+}
+
+static list_node_t *select_playlist_node(JsonDocument &doc, bool prefer_last) {
     if (ListHost == NULL || ListHost->len == 0) {
         return NULL;
     }
 
     const char *order = doc["order"] | "sequential";
     const char *last = doc["last"] | "";
+    const char *next = doc["next"] | "";
     JsonArray playlist = doc["playlist"].as<JsonArray>();
     bool has_playlist = doc["playlist"].is<JsonArray>() && playlist.size() > 0;
+    if (next[0] != '\0') {
+        list_node_t *next_node = find_node_by_name(next);
+        if (next_node != NULL) {
+            return next_node;
+        }
+    }
+    if (prefer_last && last[0] != '\0') {
+        list_node_t *last_node = find_node_by_name(last);
+        if (last_node != NULL) {
+            return last_node;
+        }
+    }
 
     if (has_playlist) {
         int valid_count = 0;
@@ -259,11 +315,21 @@ static void boot_button_user_Task(void *arg) {
                         xSemaphoreGive(sleep_Semp);
                         continue;
                     }
-                    list_node_t *sdcard_node = select_playlist_node(config_doc);
+                    bool prefer_last = basic_prefer_last_on_first_update;
+                    basic_prefer_last_on_first_update = false;
+                    if (prefer_last && current_image_is_last(config_doc)) {
+                        ESP_LOGI(TAG, "last image is already current, starting sleep timer without refresh");
+                        xSemaphoreGive(epaper_gui_semapHandle);
+                        Basic_sleep_arg = 1;
+                        xSemaphoreGive(sleep_Semp);
+                        continue;
+                    }
+                    list_node_t *sdcard_node = select_playlist_node(config_doc, prefer_last);
                     if (sdcard_node != NULL) {
                         xEventGroupSetBits(Green_led_Mode_queue,set_bit_button(6));
                         Green_led_arg                   = 1;
                         CustomSDPortNode_t *sdcard_Name_node = (CustomSDPortNode_t *) sdcard_node->val;
+                        ESP_LOGI(TAG, "displaying mode 1 image: %s", sdcard_Name_node->sdcard_name);
                         ePaperDisplay.EPD_SDcardScaleIMGShakingColor(sdcard_Name_node->sdcard_name,0,0);
                         ePaperDisplay.EPD_Display();
                         write_last_image_name(get_basename(sdcard_Name_node->sdcard_name));
@@ -315,6 +381,14 @@ static void default_sleep_user_Task(void *arg) {
     }
 }
 
+static void mode1_auto_start_task(void *arg) {
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    basic_prefer_last_on_first_update = true;
+    ESP_LOGI(TAG, "auto-starting mode 1 cycle");
+    xEventGroupSetBits(BootButtonGroups, set_bit_button(0));
+    vTaskDelete(NULL);
+}
+
 static void get_wakeup_gpio(void) {
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
     if (ESP_SLEEP_WAKEUP_EXT1 == wakeup_reason) {
@@ -327,7 +401,11 @@ static void get_wakeup_gpio(void) {
             return;
         }
     } else if (ESP_SLEEP_WAKEUP_TIMER == wakeup_reason) {
+        ESP_LOGI(TAG, "timer wakeup, starting mode 1 cycle");
         xEventGroupSetBits(BootButtonGroups, set_bit_button(0)); 
+    } else {
+        ESP_LOGI(TAG, "regular boot into mode 1, scheduling auto-start");
+        xTaskCreate(mode1_auto_start_task, "mode1_auto_start_task", 3 * 1024, NULL, 3, NULL);
     }
 }
 
@@ -344,6 +422,7 @@ void User_Basic_mode_app_init(void) {
     }
     SDPort->SDPort_ScanListDir("/sdcard/06_user_foundation_img"); 
     ESP_LOGW("IMG","Values:%d",SDPort->Get_Sdcard_ImgValue());  
+    xTaskCreate(mode1_ready_beep_task, "mode1_ready_beep_task", 4 * 1024, NULL, 2, NULL);
     xTaskCreate(boot_button_user_Task, "boot_button_user_Task", 6 * 1024, &wakeup_basic_flag, 3, NULL);
     xTaskCreate(default_sleep_user_Task, "default_sleep_user_Task", 4 * 1024, &Basic_sleep_arg, 3, NULL); 
     get_wakeup_gpio();

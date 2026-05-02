@@ -2,6 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=pp-style.sh
+source "$SCRIPT_DIR/pp-style.sh"
+
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SOURCE_DIR="$PROJECT_ROOT/02_SDCARD/03_sys_ap_html"
 
@@ -21,11 +24,6 @@ Copies files from:
 To:
   <SD volume>/03_sys_ap_html
 EOF
-}
-
-die() {
-  echo "Error: $*" >&2
-  exit 1
 }
 
 resolve_target_dir() {
@@ -49,7 +47,6 @@ resolve_target_dir() {
     [[ -d "$volume" ]] || continue
     [[ -d "$volume/03_sys_ap_html" ]] || continue
 
-    # Treat these sibling folders as a guard that this is the PhotoPainter SD card, not a random volume.
     if [[ -d "$volume/02_sys_ap_img" || -d "$volume/06_user_foundation_img" || -d "$volume/06_user_Foundation_img" ]]; then
       matches+=("$volume/03_sys_ap_html")
     fi
@@ -59,8 +56,8 @@ resolve_target_dir() {
     die "No PhotoPainter SD card found. Pass the volume path explicitly, for example: scripts/pp-update-html.sh \"/Volumes/NO NAME\""
   fi
   if [[ "${#matches[@]}" -gt 1 ]]; then
-    printf 'Found multiple possible SD cards:\n' >&2
-    printf '  %s\n' "${matches[@]}" >&2
+    echo "${Y}Found multiple possible SD cards:${R}" >&2
+    printf "  ${D}%s${R}\n" "${matches[@]}" >&2
     die "Pass the target path explicitly."
   fi
 
@@ -82,14 +79,21 @@ case "$TARGET_DIR" in
   *) die "Refusing to update a target outside /Volumes: $TARGET_DIR" ;;
 esac
 
-echo "Updating PhotoPainter web UI:"
-echo "  from: $SOURCE_DIR/"
-echo "  to:   $TARGET_DIR/"
+pp_header "Web UI (SD card)"
+printf '  %-10s %s\n' "${D}Source${R}" "$SOURCE_DIR/"
+printf '  %-10s %s\n' "${D}Target${R}" "${M}${TARGET_DIR}/${R}"
+pp_rule
+echo ""
+echo "  ${C}→${R}  ${D}rsync (mirror, delete extras on card)${R}"
+echo ""
 
-rsync -av --delete \
+rsync -av --delete --stats \
   --exclude='.DS_Store' \
   "$SOURCE_DIR/" \
   "$TARGET_DIR/"
 
 sync
-echo "HTML update complete."
+
+pp_footer_done \
+  "${D}HTML on the SD card is in sync with the repo copy.${R}" \
+  "${D}Eject the volume safely before removing the card.${R}"

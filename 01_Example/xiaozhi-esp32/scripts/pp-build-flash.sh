@@ -2,5 +2,5 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$SCRIPT_DIR/pp-build.sh"
 "$SCRIPT_DIR/pp-flash.sh" "${1:-}"
-

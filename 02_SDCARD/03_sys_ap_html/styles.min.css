@@ -9,6 +9,10 @@
     --accent-dark: #145a38;
     --accent-soft: #e1f1e7;
     --warning: #9b5c00;
+    --danger: #9a2b2b;
+    --danger-soft: #f9e3e3;
+    --info: #2c677d;
+    --info-soft: #e2f2f8;
     --shadow: 0 18px 48px rgba(43, 35, 24, .12);
 }
 
@@ -29,13 +33,19 @@ body {
         linear-gradient(180deg, #fbf7ef 0%, var(--page) 100%);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
     letter-spacing: 0;
+    padding-top: env(safe-area-inset-top);
+    padding-right: env(safe-area-inset-right);
+    padding-left: env(safe-area-inset-left);
 }
 
 .app-shell {
     width: min(1180px, 100%);
     min-height: 100vh;
     margin: 0 auto;
-    padding: clamp(18px, 3vw, 36px);
+    padding:
+        calc(clamp(18px, 3vw, 36px))
+        calc(clamp(18px, 3vw, 36px))
+        calc(clamp(18px, 3vw, 36px) + env(safe-area-inset-bottom));
     display: flex;
     flex-direction: column;
     gap: 18px;
@@ -355,12 +365,166 @@ h1 {
 }
 
 .status-row {
+    position: relative;
+    overflow: hidden;
     padding: 10px 14px;
     border-radius: 14px;
     color: var(--accent-dark);
     background: var(--accent-soft);
     font-size: 14px;
     font-weight: 700;
+    transition: background-color .22s ease, color .22s ease, border-color .22s ease, transform .22s ease;
+}
+
+.status-row::before {
+    content: "";
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-right: 10px;
+    border-radius: 999px;
+    background: currentColor;
+    box-shadow: 0 0 0 4px rgba(31, 122, 77, .14);
+    vertical-align: middle;
+}
+
+.status-row.is-success {
+    color: var(--accent-dark);
+    background: var(--accent-soft);
+}
+
+.status-row.is-info {
+    color: var(--info);
+    background: var(--info-soft);
+}
+
+.status-row.is-error {
+    color: var(--danger);
+    background: var(--danger-soft);
+}
+
+.notification-stack {
+    position: fixed;
+    top: 22px;
+    right: 22px;
+    z-index: 30;
+    width: min(380px, calc(100vw - 24px));
+    display: grid;
+    gap: 10px;
+    pointer-events: none;
+}
+
+.toast-notification {
+    position: relative;
+    overflow: hidden;
+    padding: 14px 44px 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: rgba(255, 253, 248, .96);
+    box-shadow: 0 18px 48px rgba(43, 35, 24, .18);
+    color: var(--ink);
+    pointer-events: auto;
+    transform: translateY(-16px) scale(.965);
+    opacity: 0;
+    filter: blur(10px);
+    transition:
+        opacity .34s cubic-bezier(.22, 1, .36, 1),
+        transform .42s cubic-bezier(.16, 1, .3, 1),
+        filter .38s cubic-bezier(.22, 1, .36, 1);
+}
+
+.toast-notification.is-visible {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+}
+
+.toast-notification.is-hiding {
+    opacity: 0;
+    transform: translateY(-10px) scale(.978);
+    filter: blur(8px);
+}
+
+.toast-notification::before {
+    content: "";
+    position: absolute;
+    top: 14px;
+    left: 14px;
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    background: currentColor;
+    box-shadow: 0 0 0 4px rgba(31, 122, 77, .14);
+}
+
+.toast-notification.is-success {
+    color: var(--accent-dark);
+    background: rgba(241, 251, 244, .98);
+}
+
+.toast-notification.is-info {
+    color: var(--info);
+    background: rgba(241, 250, 254, .98);
+}
+
+.toast-notification.is-error {
+    color: var(--danger);
+    background: rgba(254, 244, 244, .98);
+}
+
+.toast-body {
+    display: grid;
+    gap: 4px;
+    padding-left: 20px;
+}
+
+.toast-label {
+    font-size: 11px;
+    font-weight: 900;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    opacity: .72;
+}
+
+.toast-message {
+    font-size: 14px;
+    font-weight: 800;
+    line-height: 1.4;
+}
+
+.toast-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 28px;
+    height: 28px;
+    border: 0;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, .06);
+    color: currentColor;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.toast-progress {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: 3px;
+    background: rgba(0, 0, 0, .08);
+    transform-origin: left center;
+    animation: toast-progress linear forwards;
+}
+
+@keyframes toast-progress {
+    from {
+        transform: scaleX(1);
+    }
+    to {
+        transform: scaleX(0);
+    }
 }
 
 .device-panel {
@@ -692,6 +856,19 @@ h1 {
     font-weight: 800;
 }
 
+.schedule-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.schedule-actions .btn {
+    min-height: 42px;
+    border: 0;
+    border-radius: 12px;
+    padding: 0 16px;
+    font-weight: 800;
+}
+
 .playlist-tools {
     grid-template-columns: minmax(220px, 1fr) auto auto auto;
     align-items: end;
@@ -800,6 +977,11 @@ h1 {
     background:
         linear-gradient(135deg, transparent 47%, #c9bcaa 48%, #c9bcaa 52%, transparent 53%),
         #f2eadf;
+}
+
+.library-preview.is-repairing {
+    opacity: .65;
+    filter: saturate(.75);
 }
 
 .library-meta {
@@ -974,11 +1156,15 @@ h1 {
 
 @media (max-width: 860px) {
     body {
-        padding-bottom: 92px;
+        padding-bottom: calc(92px + env(safe-area-inset-bottom));
     }
 
     .app-shell {
-        padding: 16px;
+        padding:
+            max(16px, env(safe-area-inset-top))
+            max(16px, env(safe-area-inset-right))
+            calc(16px + env(safe-area-inset-bottom))
+            max(16px, env(safe-area-inset-left));
     }
 
     .hero {
@@ -993,9 +1179,9 @@ h1 {
     .app-nav {
         position: fixed;
         top: auto;
-        right: 12px;
-        bottom: 12px;
-        left: 12px;
+        right: max(12px, env(safe-area-inset-right));
+        bottom: calc(12px + env(safe-area-inset-bottom));
+        left: max(12px, env(safe-area-inset-left));
         border-radius: 22px;
     }
 
@@ -1089,6 +1275,10 @@ h1 {
         grid-template-columns: 1fr;
     }
 
+    .schedule-actions .btn {
+        width: 100%;
+    }
+
     .library-item {
         grid-template-columns: auto auto 86px minmax(0, 1fr);
         gap: 8px;
@@ -1120,6 +1310,17 @@ h1 {
 
     .preview-grid {
         grid-template-columns: 1fr;
+    }
+
+    .notification-stack {
+        top: 12px;
+        right: 12px;
+        left: 12px;
+        width: auto;
+    }
+
+    .toast-notification {
+        border-radius: 16px;
     }
 
     .preview-card {

@@ -1,0 +1,15 @@
+{
+  "name": "PhotoPainter Admin",
+  "short_name": "PhotoPainter",
+  "start_url": "/index.html",
+  "display": "standalone",
+  "background_color": "#f4f0e7",
+  "theme_color": "#f4f0e7",
+  "icons": [
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ]
+}

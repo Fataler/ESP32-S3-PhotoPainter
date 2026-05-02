@@ -19,8 +19,10 @@ idf_component_register(
     pmicpower
     esp_app_format
     spi_flash
+    nvs_flash
     esp_wifi
     esp_http_server
+    mbedtls
     json
     REQUIRES
     espressif__libpng
