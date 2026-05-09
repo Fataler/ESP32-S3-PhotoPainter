@@ -8,8 +8,7 @@
 #include <esp_random.h>
 #include "user_app.h"
 #include "button_bsp.h"
-#include "codec_bsp.h"
-#include "ai_app.h"
+#include "power_bsp.h"
 #include "list.h"
 #include "ArduinoJson.h"
 
@@ -24,40 +23,10 @@ static uint8_t           Basic_sleep_arg = 0; // Parameters for low-power tasks
 static SemaphoreHandle_t sleep_Semp;          // Binary call low-power task 
 static uint8_t           wakeup_basic_flag = 0;
 static bool              basic_prefer_last_on_first_update = false;
+static bool              basic_image_list_scanned = false;
 static list_t* ListHost;
 static const char *TAG = "BasicMode";
 static const char *BasicConfigPath = "/sdcard/06_user_foundation_img/config.txt";
-
-static void mode1_ready_beep_task(void *arg) {
-    CodecPort audioPort(I2cBus);
-    if (audioPort.Codec_PlayInfoAudio()) {
-        const int sample_rate = 24000;
-        const int tone_hz = 1700;
-        const int duration_ms = 90;
-        const int total_frames = sample_rate * duration_ms / 1000;
-        const int period_frames = sample_rate / tone_hz;
-        const int16_t amplitude = 4500;
-        int16_t frames[128 * 2];
-
-        int frame_index = 0;
-        while (frame_index < total_frames) {
-            int frames_count = total_frames - frame_index;
-            if (frames_count > 128) {
-                frames_count = 128;
-            }
-            for (int i = 0; i < frames_count; i++) {
-                int phase = (frame_index + i) % period_frames;
-                int16_t sample = (phase < (period_frames / 2)) ? amplitude : -amplitude;
-                frames[i * 2] = sample;
-                frames[i * 2 + 1] = sample;
-            }
-            audioPort.Codec_PlayBackWrite(frames, frames_count * 2 * sizeof(int16_t));
-            frame_index += frames_count;
-        }
-        audioPort.Codec_ClosePlay();
-    }
-    vTaskDelete(NULL);
-}
 
 static const char *get_basename(const char *path) {
     const char *slash = strrchr(path, '/');
@@ -105,22 +74,32 @@ static int parse_hhmm_minutes(const char *value, int fallback) {
     return hour * 60 + minute;
 }
 
-static bool is_night_minute(int minute, int day_start, int night_start) {
-    if (day_start == night_start) {
-        return false;
-    }
-    if (day_start < night_start) {
-        return minute < day_start || minute >= night_start;
-    }
-    return minute >= night_start && minute < day_start;
+static int parse_hhmm_seconds(const char *value, int fallback_seconds) {
+    int fallback_minutes = fallback_seconds / 60;
+    return parse_hhmm_minutes(value, fallback_minutes) * 60;
 }
 
-static int seconds_until_minute(int current_minute, int target_minute) {
-    int delta_minutes = target_minute - current_minute;
-    if (delta_minutes <= 0) {
-        delta_minutes += 24 * 60;
+static bool is_night_second(int second, int day_start_second, int night_start_second) {
+    if (day_start_second == night_start_second) {
+        return false;
     }
-    return delta_minutes * 60;
+    if (day_start_second < night_start_second) {
+        return second < day_start_second || second >= night_start_second;
+    }
+    return second >= night_start_second && second < day_start_second;
+}
+
+static int seconds_until_second(int current_second, int target_second) {
+    int delta_seconds = target_second - current_second;
+    if (delta_seconds <= 0) {
+        delta_seconds += 24 * 60 * 60;
+    }
+    return delta_seconds;
+}
+
+static int get_local_day_second(JsonObject schedule) {
+    int timezone_offset = schedule["timezoneOffsetMinutes"] | 0;
+    return (int)(((basic_rtc_epoch + timezone_offset * 60) % 86400 + 86400) % 86400);
 }
 
 static void update_sleep_time_from_config(JsonDocument &doc) {
@@ -147,17 +126,16 @@ static void update_sleep_time_from_config(JsonDocument &doc) {
         return;
     }
 
-    int day_start = parse_hhmm_minutes(schedule["dayStart"] | "08:00", 8 * 60);
-    int night_start = parse_hhmm_minutes(schedule["nightStart"] | "23:00", 23 * 60);
+    int day_start = parse_hhmm_seconds(schedule["dayStart"] | "08:00", 8 * 60 * 60);
+    int night_start = parse_hhmm_seconds(schedule["nightStart"] | "23:00", 23 * 60 * 60);
     int day_timer = schedule["dayTimer"] | timer;
     if (day_timer < 30 || day_timer > 86400) {
         day_timer = timer;
     }
-    int timezone_offset = schedule["timezoneOffsetMinutes"] | 0;
-    int local_minute = (int)(((basic_rtc_epoch + timezone_offset * 60) % 86400 + 86400) % 86400) / 60;
+    int local_second = get_local_day_second(schedule);
 
-    if (is_night_minute(local_minute, day_start, night_start)) {
-        basic_rtc_set_time = seconds_until_minute(local_minute, day_start);
+    if (is_night_second(local_second, day_start, night_start)) {
+        basic_rtc_set_time = seconds_until_second(local_second, day_start);
     } else {
         basic_rtc_set_time = day_timer;
     }
@@ -172,11 +150,35 @@ static bool should_skip_display_for_schedule(JsonDocument &doc) {
     if (!(schedule["enabled"] | false)) {
         return false;
     }
-    int day_start = parse_hhmm_minutes(schedule["dayStart"] | "08:00", 8 * 60);
-    int night_start = parse_hhmm_minutes(schedule["nightStart"] | "23:00", 23 * 60);
-    int timezone_offset = schedule["timezoneOffsetMinutes"] | 0;
-    int local_minute = (int)(((basic_rtc_epoch + timezone_offset * 60) % 86400 + 86400) % 86400) / 60;
-    return is_night_minute(local_minute, day_start, night_start);
+    int day_start = parse_hhmm_seconds(schedule["dayStart"] | "08:00", 8 * 60 * 60);
+    int night_start = parse_hhmm_seconds(schedule["nightStart"] | "23:00", 23 * 60 * 60);
+    int local_second = get_local_day_second(schedule);
+    return is_night_second(local_second, day_start, night_start);
+}
+
+static bool should_show_sleep_overlay(JsonDocument &doc, int next_sleep_seconds) {
+    if (!doc["schedule"].is<JsonObject>() || !basic_rtc_epoch_valid || next_sleep_seconds <= 0) {
+        return false;
+    }
+    JsonObject schedule = doc["schedule"].as<JsonObject>();
+    if (!(schedule["enabled"] | false)) {
+        return false;
+    }
+    int day_start = parse_hhmm_seconds(schedule["dayStart"] | "08:00", 8 * 60 * 60);
+    int night_start = parse_hhmm_seconds(schedule["nightStart"] | "23:00", 23 * 60 * 60);
+    int local_second = get_local_day_second(schedule);
+    if (is_night_second(local_second, day_start, night_start)) {
+        return false;
+    }
+    return next_sleep_seconds >= seconds_until_second(local_second, night_start);
+}
+
+static int get_overlay_battery_percent(void) {
+    PmicBatteryMetrics battery = Custom_PmicGetBatteryMetrics();
+    if (!battery.available || battery.percent < 0) {
+        return -1;
+    }
+    return battery.percent;
 }
 
 static void prepare_deep_sleep_timer(void) {
@@ -184,6 +186,32 @@ static void prepare_deep_sleep_timer(void) {
         basic_rtc_epoch += basic_rtc_set_time;
     }
     esp_sleep_enable_timer_wakeup((uint64_t)basic_rtc_set_time * 1000000ULL);
+}
+
+static void prepare_mode1_deep_sleep(void) {
+    const uint64_t ext_wakeup_pin_1_mask = 1ULL << ext_wakeup_pin_1;
+    const uint64_t ext_wakeup_pin_3_mask = 1ULL << ext_wakeup_pin_3;
+    ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup_io(ext_wakeup_pin_1_mask | ext_wakeup_pin_3_mask, ESP_EXT1_WAKEUP_ANY_LOW));
+    ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(ext_wakeup_pin_3));
+    ESP_ERROR_CHECK(rtc_gpio_pullup_en(ext_wakeup_pin_3));
+    JsonDocument config_doc;
+    read_basic_config(config_doc);
+    update_sleep_time_from_config(config_doc);
+    prepare_deep_sleep_timer();
+}
+
+static void request_mode1_sleep(void) {
+    Basic_sleep_arg = 1;
+    xSemaphoreGive(sleep_Semp);
+}
+
+static void ensure_image_list_scanned(void) {
+    if (basic_image_list_scanned) {
+        return;
+    }
+    SDPort->SDPort_ScanListDir("/sdcard/06_user_foundation_img");
+    basic_image_list_scanned = true;
+    ESP_LOGW("IMG","Values:%d",SDPort->Get_Sdcard_ImgValue());
 }
 
 static void write_last_image_name(const char *name) {
@@ -301,7 +329,6 @@ static list_node_t *select_playlist_node(JsonDocument &doc, bool prefer_last) {
 
 static void boot_button_user_Task(void *arg) {
     uint8_t *wakeup_arg = (uint8_t *) arg;
-    ePaperDisplay.EPD_Init();
     for (;;) {
         EventBits_t even = xEventGroupWaitBits(BootButtonGroups, (0x01) | (0x02) , pdTRUE, pdFALSE, pdMS_TO_TICKS(2000));
         if (get_bit_button(even, 0)) { //单击
@@ -311,17 +338,16 @@ static void boot_button_user_Task(void *arg) {
                     read_basic_config(config_doc);
                     if (should_skip_display_for_schedule(config_doc)) {
                         xSemaphoreGive(epaper_gui_semapHandle);
-                        Basic_sleep_arg = 1;
-                        xSemaphoreGive(sleep_Semp);
+                        request_mode1_sleep();
                         continue;
                     }
+                    ensure_image_list_scanned();
                     bool prefer_last = basic_prefer_last_on_first_update;
                     basic_prefer_last_on_first_update = false;
                     if (prefer_last && current_image_is_last(config_doc)) {
                         ESP_LOGI(TAG, "last image is already current, starting sleep timer without refresh");
                         xSemaphoreGive(epaper_gui_semapHandle);
-                        Basic_sleep_arg = 1;
-                        xSemaphoreGive(sleep_Semp);
+                        request_mode1_sleep();
                         continue;
                     }
                     list_node_t *sdcard_node = select_playlist_node(config_doc, prefer_last);
@@ -330,26 +356,21 @@ static void boot_button_user_Task(void *arg) {
                         Green_led_arg                   = 1;
                         CustomSDPortNode_t *sdcard_Name_node = (CustomSDPortNode_t *) sdcard_node->val;
                         ESP_LOGI(TAG, "displaying mode 1 image: %s", sdcard_Name_node->sdcard_name);
+                        ePaperDisplay.EPD_Init();
                         ePaperDisplay.EPD_SDcardScaleIMGShakingColor(sdcard_Name_node->sdcard_name,0,0);
+                        ePaperDisplay.EPD_SetStatusOverlay(get_overlay_battery_percent(), should_show_sleep_overlay(config_doc, basic_rtc_set_time));
                         ePaperDisplay.EPD_Display();
                         write_last_image_name(get_basename(sdcard_Name_node->sdcard_name));
-                        xSemaphoreGive(epaper_gui_semapHandle); 
                         Green_led_arg = 0;
-                        Basic_sleep_arg = 1;
-                        xSemaphoreGive(sleep_Semp);
+                    } else {
+                        ESP_LOGW(TAG, "mode 1 has no displayable images; going to sleep");
                     }
+                    xSemaphoreGive(epaper_gui_semapHandle);
+                    request_mode1_sleep();
                 }
             }
         } else if(even & 0x02) { //长按 低功耗
-            const uint64_t ext_wakeup_pin_1_mask = 1ULL << ext_wakeup_pin_1;
-            const uint64_t ext_wakeup_pin_3_mask = 1ULL << ext_wakeup_pin_3;
-            ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup_io(ext_wakeup_pin_1_mask | ext_wakeup_pin_3_mask, ESP_EXT1_WAKEUP_ANY_LOW)); 
-            ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(ext_wakeup_pin_3));
-            ESP_ERROR_CHECK(rtc_gpio_pullup_en(ext_wakeup_pin_3));
-            JsonDocument config_doc;
-            read_basic_config(config_doc);
-            update_sleep_time_from_config(config_doc);
-            prepare_deep_sleep_timer();
+            prepare_mode1_deep_sleep();
             //axp_basic_sleep_start();
             do {
                 vTaskDelay(pdMS_TO_TICKS(50));
@@ -364,17 +385,9 @@ static void default_sleep_user_Task(void *arg) {
     for (;;) {
         if (pdTRUE == xSemaphoreTake(sleep_Semp, portMAX_DELAY)) {
             if (*sleep_arg == 1) {
-                const uint64_t ext_wakeup_pin_1_mask = 1ULL << ext_wakeup_pin_1;
-                const uint64_t ext_wakeup_pin_3_mask = 1ULL << ext_wakeup_pin_3;
-                ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup_io(ext_wakeup_pin_1_mask | ext_wakeup_pin_3_mask,ESP_EXT1_WAKEUP_ANY_LOW)); 
-                ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(ext_wakeup_pin_3));
-                ESP_ERROR_CHECK(rtc_gpio_pullup_en(ext_wakeup_pin_3));
-                JsonDocument config_doc;
-                read_basic_config(config_doc);
-                update_sleep_time_from_config(config_doc);
-                prepare_deep_sleep_timer();
+                prepare_mode1_deep_sleep();
                 //axp_basic_sleep_start(); 
-                vTaskDelay(pdMS_TO_TICKS(500));
+                vTaskDelay(pdMS_TO_TICKS(100));
                 esp_deep_sleep_start();  
             }
         }
@@ -382,7 +395,7 @@ static void default_sleep_user_Task(void *arg) {
 }
 
 static void mode1_auto_start_task(void *arg) {
-    vTaskDelay(pdMS_TO_TICKS(1500));
+    vTaskDelay(pdMS_TO_TICKS(300));
     basic_prefer_last_on_first_update = true;
     ESP_LOGI(TAG, "auto-starting mode 1 cycle");
     xEventGroupSetBits(BootButtonGroups, set_bit_button(0));
@@ -412,17 +425,15 @@ static void get_wakeup_gpio(void) {
 void User_Basic_mode_app_init(void) {
     ListHost = SDPort->SDPort_GetListHost();
     sleep_Semp  = xSemaphoreCreateBinary();
-    BaseAIModel model(SDPort,decdither);
     xEventGroupSetBits(Red_led_Mode_queue, set_bit_button(0));  
-    BaseAIModelConfig_t *AIModelConfig = NULL;
-    AIModelConfig = model.BaseAIModel_SdcardReadAIModelConfig();
-    if (AIModelConfig != NULL) {                            
-        basic_rtc_set_time = AIModelConfig->time;
+    JsonDocument config_doc;
+    if (read_basic_config(config_doc)) {
+        int timer = config_doc["timer"] | basic_rtc_set_time;
+        if (timer >= 30 && timer <= 86400) {
+            basic_rtc_set_time = timer;
+        }
         ESP_LOGI("TIMER", "basic_rtc_set_time:%d", basic_rtc_set_time);
     }
-    SDPort->SDPort_ScanListDir("/sdcard/06_user_foundation_img"); 
-    ESP_LOGW("IMG","Values:%d",SDPort->Get_Sdcard_ImgValue());  
-    xTaskCreate(mode1_ready_beep_task, "mode1_ready_beep_task", 4 * 1024, NULL, 2, NULL);
     xTaskCreate(boot_button_user_Task, "boot_button_user_Task", 6 * 1024, &wakeup_basic_flag, 3, NULL);
     xTaskCreate(default_sleep_user_Task, "default_sleep_user_Task", 4 * 1024, &Basic_sleep_arg, 3, NULL); 
     get_wakeup_gpio();

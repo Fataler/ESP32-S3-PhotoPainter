@@ -138,20 +138,30 @@ void TraverseNvs::TraverseNvs_PrintAllNvs(const char *ns_name) {
 }
 
 void TraverseNvs::parse_sta_ssid_blob(const uint8_t *blob_data, size_t blob_len, char *out_ssid) {
-    if (blob_data == NULL || blob_len < 4 || out_ssid == NULL) {
-        strcpy(out_ssid, "");
+    if (out_ssid == NULL) {
+        return;
+    }
+    if (blob_data == NULL || blob_len < 4) {
+        out_ssid[0] = '\0';
         return;
     }
     uint32_t ssid_len = *((uint32_t *) blob_data);
     ssid_len = (ssid_len > 32) ? 32 : ssid_len;
+    if (blob_len < 4 + ssid_len) {
+        out_ssid[0] = '\0';
+        return;
+    }
     memcpy(out_ssid, blob_data + 4, ssid_len);
     out_ssid[ssid_len] = '\0';
     ESP_LOGI(TAG, "Parsed to SSID: %s (length: %u)", out_ssid, ssid_len);
 }
 
 void TraverseNvs::parse_sta_pswd_blob(const uint8_t *blob_data, size_t blob_len, char *out_password) {
-    if (blob_data == NULL || blob_len == 0 || out_password == NULL) {
-        strcpy(out_password, "");
+    if (out_password == NULL) {
+        return;
+    }
+    if (blob_data == NULL || blob_len == 0) {
+        out_password[0] = '\0';
         return;
     }
 

@@ -21,10 +21,10 @@ dither_(dither)
     //floyd_buffer     = (uint8_t *) heap_caps_malloc(width * height * 3, MALLOC_CAP_SPIRAM); // Store the data after applying the RGB888 jitter algorithm
     AIModelConfig    = (BaseAIModelConfig_t *) heap_caps_malloc(sizeof(BaseAIModelConfig_t),MALLOC_CAP_SPIRAM);
     AIresponse.buffer = (char *) heap_caps_malloc(500 * 1024,MALLOC_CAP_SPIRAM);
+    AIresponse.buffer_cap = 500 * 1024;
     assert(ark_request_body);
     assert(url_copy);
     //assert(jpg_buffer);
-    //assert(floyd_buffer);
     assert(AIModelConfig);
     assert(AIresponse.buffer);
 }
@@ -50,12 +50,21 @@ int BaseAIModel::BaseAIModel_HttpCallbackFun(esp_http_client_event_t *evt) {
     http_response_t *resp = (http_response_t *) evt->user_data;
     switch (evt->event_id) {
     case HTTP_EVENT_ON_DATA:
-        if (!esp_http_client_is_chunked_response(evt->client)) {
+        {
             int copy_len = evt->data_len;
+            if (resp == NULL || resp->buffer == NULL || resp->buffer_cap <= 1) {
+                return ESP_FAIL;
+            }
+            if (resp->buffer_len + copy_len >= resp->buffer_cap) {
+                copy_len = resp->buffer_cap - resp->buffer_len - 1;
+                ESP_LOGE("AIModel", "HTTP response buffer full, truncating response");
+            }
+            if (copy_len <= 0) {
+                return ESP_FAIL;
+            }
             memcpy(resp->buffer + resp->buffer_len, evt->data, copy_len);
             resp->buffer_len += copy_len;
             resp->buffer[resp->buffer_len] = '\0';
-            //ESP_LOGW("HTTP_CALLBACK", "Received data length: %d", copy_len);
         }
         break;
     default:
@@ -65,6 +74,10 @@ int BaseAIModel::BaseAIModel_HttpCallbackFun(esp_http_client_event_t *evt) {
 }
 
 const char *BaseAIModel::BaseAIModel_GetImgURL() {
+    if (AIresponse.buffer != NULL) {
+        AIresponse.buffer[0] = '\0';
+    }
+    AIresponse.buffer_len = 0;
     esp_http_client_config_t config = {};
     config.url                      = url;
     config.event_handler            = BaseAIModel_HttpCallbackFun;
@@ -74,7 +87,6 @@ const char *BaseAIModel::BaseAIModel_GetImgURL() {
 
     char auth_header[128];
     snprintf(auth_header, sizeof(auth_header), "Bearer %s", apk);
-    ESP_LOGW(TAG, "apk:%s", auth_header);
 
     esp_http_client_set_method(client, HTTP_METHOD_POST);
     esp_http_client_set_header(client, "Content-Type", "application/json");
@@ -105,8 +117,7 @@ const char *BaseAIModel::BaseAIModel_GetImgURL() {
         return NULL;
     }
 
-    strcpy(url_copy, url_str);
-    url_copy[strlen(url_copy)] = 0;
+    snprintf(url_copy, 1024, "%s", url_str);
 
     AIresponse.buffer_len = 0;
     return url_copy;
@@ -117,6 +128,10 @@ uint8_t *BaseAIModel::BaseAIModel_DownloadImgToPsram(const char *strurl, int *ou
         ESP_LOGE(TAG, "img url NUll");
         return NULL;
     }
+    if (AIresponse.buffer != NULL) {
+        AIresponse.buffer[0] = '\0';
+    }
+    AIresponse.buffer_len = 0;
     ESP_LOGW("IMG URL", "%s", strurl);
     esp_http_client_config_t config = {};
     config.url                      = strurl;
@@ -200,11 +215,19 @@ char *BaseAIModel::BaseAIModel_GetImgName() {
         return NULL;
     }
     floyd_buffer     = (uint8_t *) heap_caps_malloc(width_ * height_ * 3, MALLOC_CAP_SPIRAM); // Store the data after applying the RGB888 jitter algorithm
+    if (floyd_buffer == NULL) {
+        ESP_LOGE(TAG, "floyd buffer allocation failed");
+        dither_.ImgDecode_JPGBufferFree(jpg_dec_buffer);
+        jpg_dec_buffer = NULL;
+        return NULL;
+    }
     dither_.ImgDecode_DitherRgb888(jpg_dec_buffer, floyd_buffer, width_, height_);            //The RGB888 data has undergone the jittering algorithm.
     dither_.ImgDecode_JPGBufferFree(jpg_dec_buffer);                                          //Release memory
-    strcpy(sdcard_path,"/sdcard/04_sys_ai_img/sys_ai.bmp");
+    snprintf(sdcard_path, sizeof(sdcard_path), "%s", "/sdcard/04_sys_ai_img/sys_ai.bmp");
     if (dither_.ImgDecode_EncodingBmpToSdcard(sdcard_path, floyd_buffer, width_, height_) != ESP_OK) {
         ESP_LOGE(TAG, "rgb888 to sdcard is bmp fill");
+        heap_caps_free(floyd_buffer);
+        floyd_buffer = NULL;
         return NULL;
     }
     heap_caps_free(floyd_buffer);
@@ -215,11 +238,13 @@ char *BaseAIModel::BaseAIModel_GetImgName() {
 BaseAIModelConfig_t* BaseAIModel::BaseAIModel_SdcardReadAIModelConfig() {
     uint8_t *sdcard_buffer = (uint8_t *)malloc(4096);
     assert(sdcard_buffer);
-    if(SDPort_->SDPort_ReadFile("/sdcard/06_user_foundation_img/config.txt", sdcard_buffer, NULL) != ESP_OK) {
+    size_t config_len = 0;
+    if(SDPort_->SDPort_ReadFileBounded("/sdcard/06_user_foundation_img/config.txt", sdcard_buffer, 4095, &config_len) != ESP_OK) {
         free(sdcard_buffer);
         sdcard_buffer = NULL;
         return NULL;
     }
+    sdcard_buffer[config_len] = '\0';
     DeserializationError error = deserializeJson(doc, sdcard_buffer);
     free(sdcard_buffer);
     sdcard_buffer = NULL;
@@ -237,18 +262,18 @@ BaseAIModelConfig_t* BaseAIModel::BaseAIModel_SdcardReadAIModelConfig() {
         ESP_LOGE("sdcardjson", "AI model parsing failed");
         return NULL;
     }
-    strcpy(AIModelConfig->model,str);
+    snprintf(AIModelConfig->model, sizeof(AIModelConfig->model), "%s", str);
     str   = doc["ai_url"];
     if(str == NULL) {
         ESP_LOGE("sdcardjson", "AI URL parsing failed");
         return NULL;
     }
-    strcpy(AIModelConfig->url,str);
+    snprintf(AIModelConfig->url, sizeof(AIModelConfig->url), "%s", str);
     str   = doc["ai_key"];
     if(str == NULL) {
         ESP_LOGE("sdcardjson", "AI key parsing failed");
         return NULL;
     }
-    strcpy(AIModelConfig->key,str);
+    snprintf(AIModelConfig->key, sizeof(AIModelConfig->key), "%s", str);
     return AIModelConfig;
 }

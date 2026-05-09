@@ -10,6 +10,7 @@
 typedef struct {
     char *buffer;
     int buffer_len;
+    int buffer_cap;
 } http_response_t;
 
 typedef struct 
@@ -58,5 +59,4 @@ public:
     char *BaseAIModel_GetImgName();                                                 // Obtain the path of the last generated BMP file on the SDcard
     char *Get_AiTFImgName() {return sdcard_path;}
 };
-
 

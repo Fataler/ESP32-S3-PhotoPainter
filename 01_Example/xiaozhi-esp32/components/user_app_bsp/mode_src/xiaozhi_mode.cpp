@@ -64,7 +64,10 @@ void xiaozhi_init_received(const char *arg1)
 
 void xiaozhi_application_received(const char *str) {
     static bool is_led_flag = false;
-    strcpy(sleep_buff, str);
+    if (str == NULL) {
+        return;
+    }
+    snprintf(sleep_buff, sizeof(sleep_buff), "%s", str);
     if (is_led_flag) {
         if (strstr(sleep_buff, "idle") != NULL) {
             gpio_set_level((gpio_num_t) 45, 1);
@@ -80,8 +83,10 @@ void xiaozhi_application_received(const char *str) {
 
 void xiaozhi_ai_Message(const char *arg1, const char *arg2) //ai chat
 {
-    if (!strcmp(arg1, "user")) {
-        strcpy(str_ai_chat_buff, arg2);
+    if (arg1 != NULL && !strcmp(arg1, "user")) {
+        if (str_ai_chat_buff != NULL && arg2 != NULL) {
+            snprintf(str_ai_chat_buff, 1024, "%s", arg2);
+        }
     }
 }
 

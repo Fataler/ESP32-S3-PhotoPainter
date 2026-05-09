@@ -10,10 +10,13 @@ CustomSDPort::CustomSDPort(const char *SdName,int clk,int cmd,int d0,int d1,int 
 SdName_(SdName)
 {
     ScanListHandle = list_new();
+    if (ScanListHandle != NULL) {
+        ScanListHandle->free = free;
+    }
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {};
     mount_config.format_if_mount_failed           = false;
-    mount_config.max_files                        = 5;
+    mount_config.max_files                        = 16;
     mount_config.allocation_unit_size             = 16 * 1024 * 3;
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
@@ -70,28 +73,37 @@ int CustomSDPort::SDPort_WriteFile(const char *path, const void *data, size_t da
 }
 
 int CustomSDPort::SDPort_ReadFile(const char *path, uint8_t *buffer, size_t *outLen) {
+    return SDPort_ReadFileBounded(path, buffer, (size_t)-1, outLen);
+}
+
+int CustomSDPort::SDPort_ReadFileBounded(const char *path, uint8_t *buffer, size_t buffer_size, size_t *outLen) {
     if (sdcard_host == NULL) {
         ESP_LOGE(TAG, "SD card not initialized");
-        return ESP_ERR_INVALID_STATE;
+        return -ESP_ERR_INVALID_STATE;
     }
 
     if (sdmmc_get_status(sdcard_host) != ESP_OK) {
         ESP_LOGE(TAG, "SD card not ready");
-        return ESP_FAIL;
+        return -ESP_FAIL;
     }
 
     FILE *f = fopen(path, "rb");
     if (f == NULL) {
         ESP_LOGE(TAG, "Failed to open file: %s", path);
-        return ESP_ERR_NOT_FOUND;
+        return -ESP_ERR_NOT_FOUND;
     }
 
     fseek(f, 0, SEEK_END);
     long file_size = ftell(f);
-    if (file_size <= 0) {
+    if (file_size < 0) {
         ESP_LOGE(TAG, "Invalid file size");
         fclose(f);
-        return ESP_FAIL;
+        return -ESP_FAIL;
+    }
+    if ((size_t)file_size > buffer_size) {
+        ESP_LOGE(TAG, "File too large for buffer: %s (%ld > %zu)", path, file_size, buffer_size);
+        fclose(f);
+        return -ESP_ERR_INVALID_SIZE;
     }
     fseek(f, 0, SEEK_SET);
 
@@ -99,28 +111,37 @@ int CustomSDPort::SDPort_ReadFile(const char *path, uint8_t *buffer, size_t *out
     fclose(f);
 
     if (outLen) *outLen = bytes_read;
-    return (bytes_read > 0) ? ESP_OK : ESP_FAIL;
+    return (bytes_read == (size_t)file_size) ? ESP_OK : -ESP_FAIL;
 }
 
 int CustomSDPort::SDPort_ReadOffset(const char *path, void *buffer, size_t len, size_t offset) {
     if (sdcard_host == NULL) {
         ESP_LOGE(TAG, "SD card not initialized");
-        return ESP_ERR_INVALID_STATE;
+        return -ESP_ERR_INVALID_STATE;
     }
 
     if (sdmmc_get_status(sdcard_host) != ESP_OK) {
         ESP_LOGE(TAG, "SD card not ready");
-        return ESP_FAIL;
+        return -ESP_FAIL;
     }
 
     FILE *f = fopen(path, "rb");
     if (f == NULL) {
         ESP_LOGE(TAG, "Failed to open file: %s", path);
-        return ESP_ERR_NOT_FOUND;
+        return -ESP_ERR_NOT_FOUND;
     }
 
-    fseek(f, offset, SEEK_SET);
+    if (fseek(f, offset, SEEK_SET) != 0) {
+        ESP_LOGE(TAG, "Failed to seek file: %s", path);
+        fclose(f);
+        return -ESP_FAIL;
+    }
     size_t bytes_read = fread(buffer, 1, len, f);
+    if (ferror(f)) {
+        ESP_LOGE(TAG, "Failed to read file: %s", path);
+        fclose(f);
+        return -ESP_FAIL;
+    }
     fclose(f);
     return bytes_read;
 }
@@ -128,19 +149,19 @@ int CustomSDPort::SDPort_ReadOffset(const char *path, void *buffer, size_t len, 
 int CustomSDPort::SDPort_WriteOffset(const char *path, const void *data, size_t len, bool append) {
     if (sdcard_host == NULL) {
         ESP_LOGE(TAG, "SD card not initialized");
-        return ESP_ERR_INVALID_STATE;
+        return -ESP_ERR_INVALID_STATE;
     }
 
     if (sdmmc_get_status(sdcard_host) != ESP_OK) {
         ESP_LOGE(TAG, "SD card not ready");
-        return ESP_FAIL;
+        return -ESP_FAIL;
     }
 
     const char *mode = append ? "ab" : "wb";
     FILE *f = fopen(path, mode);
     if (f == NULL) {
         ESP_LOGE(TAG, "Failed to open file: %s", path);
-        return ESP_ERR_NOT_FOUND;
+        return -ESP_ERR_NOT_FOUND;
     }
 
     size_t bytes_written = fwrite(data, 1, len, f);
@@ -174,6 +195,15 @@ int CustomSDPort::SDPort_GetScanListValue(void) {
 void CustomSDPort::SDPort_ScanListDir(const char *path) {
     struct dirent *entry;
     DIR           *dir = opendir(path);
+    if (ScanListHandle == NULL) {
+        ESP_LOGE(TAG, "Scan list is not initialized");
+        return;
+    }
+
+    while (ScanListHandle->head != NULL) {
+        list_remove(ScanListHandle, ScanListHandle->head);
+    }
+    ImgValue = 0;
 
     if (dir == NULL) {
         ESP_LOGE(TAG, "Failed to open directory: %s", path);
@@ -195,9 +225,20 @@ void CustomSDPort::SDPort_ScanListDir(const char *path) {
                     continue;
                 }
                 CustomSDPortNode_t *node_data = (CustomSDPortNode_t *) LIST_MALLOC(sizeof(CustomSDPortNode_t));
-                assert(node_data);
+                if (node_data == NULL) {
+                    ESP_LOGE(TAG, "No memory for scan node: %s", entry->d_name);
+                    continue;
+                }
                 snprintf(node_data->sdcard_name, sizeof(node_data->sdcard_name), "%s/%s", path, entry->d_name); 
-                list_rpush(ScanListHandle, list_node_new(node_data)); 
+                list_node_t *list_node = list_node_new(node_data);
+                if (list_node == NULL || list_rpush(ScanListHandle, list_node) == NULL) {
+                    ESP_LOGE(TAG, "No memory for scan list node: %s", entry->d_name);
+                    LIST_FREE(node_data);
+                    if (list_node != NULL) {
+                        LIST_FREE(list_node);
+                    }
+                    continue;
+                }
                 ESP_LOGW("Scan_Dir","DirDoc:%s,size:%d",node_data->sdcard_name,strlen(node_data->sdcard_name));
                 ImgValue++;
             }                                     

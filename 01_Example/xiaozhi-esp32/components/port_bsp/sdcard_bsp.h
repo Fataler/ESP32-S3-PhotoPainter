@@ -28,6 +28,7 @@ public:
 
     int SDPort_WriteFile(const char *path, const void *data, size_t data_len);
     int SDPort_ReadFile(const char *path, uint8_t *buffer, size_t *outLen);
+    int SDPort_ReadFileBounded(const char *path, uint8_t *buffer, size_t buffer_size, size_t *outLen);
     int SDPort_ReadOffset(const char *path, void *buffer, size_t len, size_t offset);
     int SDPort_WriteOffset(const char *path, const void *data, size_t len, bool append);
     sdmmc_card_t* SDPort_GetSdMMCHost();

@@ -1,11 +1,15 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <stdint.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include "imgdecode_app.h"
 #include "test_decoder.h"
 
 #define CLAMP(x, lo, hi) ((x) < (lo) ? (lo) : ((x) > (hi) ? (hi) : (x)))
+#define MAX_DECODE_FILE_BYTES (8 * 1024 * 1024)
+#define MAX_DECODE_PIXELS (1350 * 1350)
 
 static const uint8_t PALETTE[6][3] = {
     {0, 0, 0},       // Black
@@ -41,6 +45,10 @@ esp_err_t ImgDecodeDither::ImgDecode_OneJPGPicture(uint8_t *inbuffer, int inlen,
 }
 
 esp_err_t ImgDecodeDither::ImgDecode_TFOneJPGPicture(const char *path,uint8_t **outbuffer, int *outlen, int *s_width, int *s_height) {
+    *outbuffer = NULL;
+    *outlen = 0;
+    *s_width = 0;
+    *s_height = 0;
     FILE *f = fopen(path, "rb");
     if (f == NULL) {
         ESP_LOGE(TAG, "Failed to open file: %s", path);
@@ -54,22 +62,40 @@ esp_err_t ImgDecodeDither::ImgDecode_TFOneJPGPicture(const char *path,uint8_t **
         fclose(f);
         return ESP_FAIL;
     }
+    if (file_size > MAX_DECODE_FILE_BYTES) {
+        ESP_LOGE(TAG, "JPG too large: %ld bytes", file_size);
+        fclose(f);
+        return ESP_FAIL;
+    }
     fseek(f, 0, SEEK_SET);
-    uint8_t *buffer = (uint8_t *)malloc(480 * 800 * 3);
-    assert(buffer);
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(file_size, MALLOC_CAP_SPIRAM);
+    if (buffer == NULL) {
+        buffer = (uint8_t *)malloc(file_size);
+    }
+    if (buffer == NULL) {
+        ESP_LOGE(TAG, "JPG input allocation failed: %ld bytes", file_size);
+        fclose(f);
+        return ESP_FAIL;
+    }
     size_t bytes_read = fread(buffer, 1, file_size, f);
     fclose(f);
-    if(bytes_read > 0) {
+    if(bytes_read == (size_t)file_size) {
         if (esp_jpeg_decode_one_picture(buffer, bytes_read, outbuffer, outlen,s_width,s_height) == JPEG_ERR_OK) {
-            free(buffer);
+            heap_caps_free(buffer);
             buffer = NULL;
+            if (*s_width <= 0 || *s_height <= 0 || (int64_t)(*s_width) * (*s_height) > MAX_DECODE_PIXELS) {
+                ESP_LOGE(TAG, "Decoded JPG dimensions are invalid: %dx%d", *s_width, *s_height);
+                ImgDecode_JPGBufferFree(*outbuffer);
+                *outbuffer = NULL;
+                return ESP_FAIL;
+            }
             return ESP_OK;
         } else {
             ESP_LOGE(TAG,"JPG Decode fill");
         }
     }
     if(buffer) {
-        free(buffer);
+        heap_caps_free(buffer);
         buffer = NULL;
     }
     return ESP_FAIL;
@@ -130,7 +156,14 @@ esp_err_t ImgDecodeDither::ImgDecode_TFOnePNGPicture(const char *png_path, uint8
     bit_depth = png_get_bit_depth(png_ptr, info_ptr);
     color_type = png_get_color_type(png_ptr, info_ptr);
     ESP_LOGI(TAG, "PNG information: %dx%d, bit depth: %d, color type: %d",*out_width, *out_height, bit_depth, color_type);
+    if (*out_width <= 0 || *out_height <= 0 || (int64_t)(*out_width) * (*out_height) > MAX_DECODE_PIXELS) {
+        ESP_LOGE(TAG, "PNG dimensions are invalid or too large: %dx%d", *out_width, *out_height);
+        goto clean_up;
+    }
 
+    if (color_type == PNG_COLOR_TYPE_PALETTE) {
+        png_set_palette_to_rgb(png_ptr);
+    }
     if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8) {
         png_set_expand_gray_1_2_4_to_8(png_ptr);
     }
@@ -140,7 +173,10 @@ esp_err_t ImgDecodeDither::ImgDecode_TFOnePNGPicture(const char *png_path, uint8
     if (bit_depth == 16) {
         png_set_strip_16(png_ptr);
     }
-    if (color_type == PNG_COLOR_TYPE_RGB || color_type == PNG_COLOR_TYPE_GRAY) {
+    if (color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_GRAY_ALPHA) {
+        png_set_gray_to_rgb(png_ptr);
+    }
+    if (color_type == PNG_COLOR_TYPE_RGB || color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_PALETTE) {
         png_set_add_alpha(png_ptr, 0xFF, PNG_FILLER_AFTER);
     }
     png_read_update_info(png_ptr, info_ptr);
@@ -250,7 +286,11 @@ esp_err_t ImgDecodeDither::ImgDecodebmp_TFOneBMPPicture(const char *bmp_path, ui
     }
 
     BITMAPFILEHEADER file_header;
-    fread(&file_header, sizeof(BITMAPFILEHEADER), 1, fp);
+    if (fread(&file_header, sizeof(BITMAPFILEHEADER), 1, fp) != 1) {
+        ESP_LOGE(TAG, "Failed to read BMP file header");
+        fclose(fp);
+        return ESP_FAIL;
+    }
     
     if (file_header.bfType != 0x4D42) {
         ESP_LOGE(TAG, "Not a valid BMP file! The current bfType = 0x%04X (should be 0x4D42)", file_header.bfType);
@@ -259,7 +299,11 @@ esp_err_t ImgDecodeDither::ImgDecodebmp_TFOneBMPPicture(const char *bmp_path, ui
     }
 
     BITMAPINFOHEADER info_header;
-    fread(&info_header, sizeof(BITMAPINFOHEADER), 1, fp);
+    if (fread(&info_header, sizeof(BITMAPINFOHEADER), 1, fp) != 1) {
+        ESP_LOGE(TAG, "Failed to read BMP info header");
+        fclose(fp);
+        return ESP_FAIL;
+    }
     
     if (info_header.biBitCount != 24 || info_header.biCompression != 0) {
         ESP_LOGE(TAG, "Only 24-bit uncompressed BMP is supported! Current bit depth: %d, Compression method: %d",
@@ -270,6 +314,11 @@ esp_err_t ImgDecodeDither::ImgDecodebmp_TFOneBMPPicture(const char *bmp_path, ui
 
     *out_width = info_header.biWidth;
     *out_height = abs(info_header.biHeight);
+    if (*out_width <= 0 || *out_height <= 0 || (int64_t)(*out_width) * (*out_height) > MAX_DECODE_PIXELS) {
+        ESP_LOGE(TAG, "BMP dimensions are invalid or too large: %dx%d", *out_width, *out_height);
+        fclose(fp);
+        return ESP_FAIL;
+    }
     bool is_row_reverse = (info_header.biHeight > 0); 
     ESP_LOGI(TAG, "BMP information: %dx%d, row reversed: %s", *out_width, *out_height, is_row_reverse ? "Y" : "N");
 
@@ -295,7 +344,14 @@ esp_err_t ImgDecodeDither::ImgDecodebmp_TFOneBMPPicture(const char *bmp_path, ui
     }
 
     for (int y = 0; y < *out_height; y++) {
-        fread(bmp_row_buf, bmp_row_bytes, 1, fp);
+        if (fread(bmp_row_buf, bmp_row_bytes, 1, fp) != 1) {
+            ESP_LOGE(TAG, "Failed to read BMP row %d", y);
+            free(bmp_row_buf);
+            heap_caps_free(*out_rgb888);
+            *out_rgb888 = NULL;
+            fclose(fp);
+            return ESP_FAIL;
+        }
 
         int rgb888_y = is_row_reverse ? (*out_height - 1 - y) : y;
         uint8_t *rgb888_row = *out_rgb888 + rgb888_y * rgb888_row_bytes;
@@ -340,10 +396,18 @@ void  ImgDecodeDither::ImgDecode_BMPBufferFree(uint8_t *buffer) {
 }
 
 void ImgDecodeDither::ImgDecode_DitherRgb888(uint8_t *in_img, uint8_t *out_img, int w, int h) {
-    uint8_t *work = (uint8_t *) malloc(w * h * 3);
-    assert(work);
-    if (!work)
+    if (in_img == NULL || out_img == NULL || w <= 0 || h <= 0 || (int64_t)w * h > MAX_DECODE_PIXELS) {
+        ESP_LOGE(TAG, "Invalid dither input: %dx%d", w, h);
         return;
+    }
+    uint8_t *work = (uint8_t *) heap_caps_malloc((size_t)w * h * 3, MALLOC_CAP_SPIRAM);
+    if (!work) {
+        work = (uint8_t *)malloc((size_t)w * h * 3);
+    }
+    if (!work) {
+        ESP_LOGE(TAG, "Dither work allocation failed: %dx%d", w, h);
+        return;
+    }
     for (int i = 0; i < w * h * 3; i++)
         work[i] = in_img[i];
 
@@ -401,7 +465,7 @@ void ImgDecodeDither::ImgDecode_DitherRgb888(uint8_t *in_img, uint8_t *out_img, 
         }
     }
 
-    free(work);
+    heap_caps_free(work);
 }
 
 esp_err_t ImgDecodeDither::ImgDecode_EncodingBmpToSdcard(const char *filename, const uint8_t *inRgb, int width, int height) {

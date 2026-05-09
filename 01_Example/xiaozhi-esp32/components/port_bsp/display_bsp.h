@@ -87,7 +87,13 @@ class ePaperPort {
     void EPD_Rotate90CCW_Fast(const uint8_t* src, uint8_t* dst, int width, int height);
     void EPD_Rotate90CW_Fast(const uint8_t* src, uint8_t* dst, int width, int height);
     void EPD_PixelRotate();
+    void EPD_SetRotatedPixel(uint16_t x, uint16_t y, uint8_t color);
+    void EPD_DrawRotatedCircle(uint16_t cx, uint16_t cy, uint16_t radius, uint8_t color);
+    void EPD_DrawRotatedCrescent(uint16_t cx, uint16_t cy);
+    void EPD_DrawStatusOverlay();
     void EPD_DrawChar(uint16_t Xpoint, uint16_t Ypoint, const char Acsii_Char,sFONT* Font, uint16_t Color_Foreground, uint16_t Color_Background);
+    int overlayBatteryPercent = -1;
+    bool overlaySleep = false;
 
   public:
     ePaperPort(ImgDecodeDither &dither,int mosi, int scl, int dc, int cs, int rst, int busy, uint16_t width, uint16_t height, uint16_t scale_MaxWidth, uint16_t scale_MaxHeight, spi_host_device_t spihost = SPI3_HOST);
@@ -97,6 +103,7 @@ class ePaperPort {
     void EPD_DispClear(uint8_t color);
     void EPD_Display();
     void EPD_SrcDisplayCopy(uint8_t *buffer,uint32_t len,uint32_t addlen);
+    void EPD_SetStatusOverlay(int batteryPercent, bool sleep);
     void Set_Rotation(uint8_t rot); // 0:no 1:90 2:180 3:270
     void Set_Mirror(uint8_t mirr_x,uint8_t mirr_y);
     uint8_t* EPD_GetIMGBuffer();
