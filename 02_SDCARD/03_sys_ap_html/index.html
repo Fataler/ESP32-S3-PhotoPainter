@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
     <link rel="manifest" href="manifest.webmanifest">
     <link rel="stylesheet" href="bootstrap.min.css">
-    <link rel="stylesheet" href="styles.min.css">
+    <link rel="stylesheet" href="styles.min.css?v=mode1-20260502h">
 </head>
 <body>
     <main class="app-shell">
@@ -57,9 +57,13 @@
                     <article class="preview-card">
                         <div class="preview-heading">
                             <h2>Исходное изображение</h2>
-                            <span>До обработки</span>
+                            <span id="Input_File_Label">До обработки</span>
                         </div>
-                        <div class="image-stage">
+                        <div class="image-stage image-stage-input is-empty" id="Input_Stage" role="button" tabindex="0" aria-label="Выбрать изображение">
+                            <div class="stage-hint" id="Input_Stage_Hint">
+                                <strong>Нажмите, чтобы выбрать фото</strong>
+                                <span>После выбора можно просто ткнуть сюда ещё раз, чтобы заменить изображение.</span>
+                            </div>
                             <img src="placeholder.svg" id="Image_Input" alt="Исходное изображение">
                         </div>
                     </article>
@@ -73,7 +77,7 @@
                             <span>Пресет обработки</span>
                             <select id="Process_Preset">
                                 <option value="auto">Авто</option>
-                                <option value="portrait">Портрет</option>
+                                <option value="portrait" selected>Портрет</option>
                                 <option value="landscape">Пейзаж</option>
                                 <option value="high_contrast">Максимум контраста</option>
                                 <option value="soft_dither">Мягкий dithering</option>
@@ -89,6 +93,10 @@
                                 <small>масштаб и сдвиг кадра</small>
                             </summary>
                             <section class="manual-crop-panel" aria-label="Ручная кадрировка">
+                                <label class="toggle-option">
+                                    <input id="Immersive_Background" type="checkbox">
+                                    <span>Иммерсивный фон вместо белых полей</span>
+                                </label>
                                 <label>
                                     <span>Масштаб</span>
                                     <input id="Crop_Zoom" type="range" min="0.70" max="2.20" step="0.01" value="1">
@@ -108,8 +116,8 @@
                 </section>
 
                 <div class="quick-actions">
-                    <button class="btn send-action" id="Send_Button" type="button">Отправить сейчас</button>
-                    <button class="btn library-action" id="Save_Library_Button" type="button">В коллекцию mode 1</button>
+                    <button class="btn send-action" id="Send_Button" type="button">Отправить на рамку</button>
+                    <button class="btn library-action" id="Save_Library_Button" type="button">Сохранить в коллекцию</button>
                 </div>
             </article>
         </section>
@@ -135,14 +143,14 @@
                 </div>
 
                 <div class="library-toolbar">
-                    <span class="library-hint">Можно перетаскивать карточки, использовать ↑ ↓ или выбрать несколько файлов для удаления.</span>
+                    <span class="library-hint">Открывается последняя страница коллекции. Можно перетаскивать карточки, использовать ↑ ↓ или выбрать несколько файлов для удаления.</span>
                 </div>
 
                 <div class="library-list" id="Library_List" aria-live="polite">
                     <div class="empty-library">Список изображений ещё не загружен.</div>
                 </div>
 
-                <button class="btn secondary-action load-more-action" id="Load_More_Button" type="button">Показать ещё</button>
+                <button class="btn secondary-action load-more-action" id="Load_More_Button" type="button">Показать предыдущие</button>
             </article>
         </section>
 
@@ -272,6 +280,6 @@
     </main>
 
     <script src="bootstrap.min.js"></script>
-    <script src="script.min.js?v=mode1-20260501"></script>
+    <script src="script.min.js?v=mode1-20260502d"></script>
 </body>
 </html>

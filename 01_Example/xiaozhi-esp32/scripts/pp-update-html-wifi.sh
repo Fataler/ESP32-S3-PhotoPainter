@@ -83,11 +83,20 @@ upload_file() {
   local file="$1"
   local path="$2"
   local attempt
+  local size_bytes max_time
+  size_bytes="$(wc -c < "$path" | tr -d ' ')"
+  max_time=$(( 60 + size_bytes / 8192 ))
+  if (( max_time < 90 )); then
+    max_time=90
+  fi
+  if (( max_time > 600 )); then
+    max_time=600
+  fi
 
   for attempt in 1 2 3; do
     if curl --fail --silent --show-error \
       --connect-timeout 8 \
-      --max-time 45 \
+      --max-time "$max_time" \
       -X POST \
       -H "Content-Type: application/octet-stream" \
       --data-binary "@$path" \
@@ -119,6 +128,7 @@ FILES=(
   "bootstrap.min.css"
   "bootstrap.min.js"
   "placeholder.svg"
+  "manifest.webmanifest"
 )
 
 pp_header "Web UI over Wi-Fi"
