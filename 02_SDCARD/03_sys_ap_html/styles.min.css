@@ -137,6 +137,53 @@ h1 {
     gap: 12px;
 }
 
+.batch-panel {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 14px;
+    align-items: center;
+    padding: 14px;
+    border: 1px solid #d8c7ad;
+    border-radius: 20px;
+    background:
+        linear-gradient(135deg, rgba(31, 122, 77, .12), rgba(56, 91, 117, .10)),
+        #fffaf0;
+    box-shadow: var(--shadow);
+}
+
+.batch-panel[hidden] {
+    display: none;
+}
+
+.batch-panel strong {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 18px;
+    font-weight: 900;
+}
+
+.batch-panel span {
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.batch-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.batch-actions .btn {
+    min-height: 40px;
+    border: 0;
+    border-radius: 12px;
+    padding: 0 12px;
+    font-size: 13px;
+    font-weight: 900;
+}
+
 .toolbar .btn,
 .preset-select select,
 .search-field select {
@@ -1492,9 +1539,18 @@ h1 {
     .playlist-row,
     .last-image-row,
     .playlist-tools,
+    .batch-panel,
     .schedule-panel,
     .library-toolbar {
         grid-template-columns: 1fr;
+    }
+
+    .batch-actions {
+        justify-content: stretch;
+    }
+
+    .batch-actions .btn {
+        flex: 1 1 45%;
     }
 
     .schedule-grid {

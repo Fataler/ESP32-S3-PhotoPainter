@@ -87,9 +87,9 @@ class ePaperPort {
     void EPD_Rotate90CCW_Fast(const uint8_t* src, uint8_t* dst, int width, int height);
     void EPD_Rotate90CW_Fast(const uint8_t* src, uint8_t* dst, int width, int height);
     void EPD_PixelRotate();
-    void EPD_SetRotatedPixel(uint16_t x, uint16_t y, uint8_t color);
-    void EPD_DrawRotatedCircle(uint16_t cx, uint16_t cy, uint16_t radius, uint8_t color);
-    void EPD_DrawRotatedCrescent(uint16_t cx, uint16_t cy);
+    void EPD_SetScanoutPixel(uint16_t x, uint16_t y, uint8_t color);
+    void EPD_DrawScanoutFilledCircle(uint16_t cx, uint16_t cy, uint16_t radius, uint8_t color);
+    void EPD_DrawScanoutMoonIcon(uint16_t cx, uint16_t cy);
     void EPD_DrawStatusOverlay();
     void EPD_DrawChar(uint16_t Xpoint, uint16_t Ypoint, const char Acsii_Char,sFONT* Font, uint16_t Color_Foreground, uint16_t Color_Background);
     int overlayBatteryPercent = -1;

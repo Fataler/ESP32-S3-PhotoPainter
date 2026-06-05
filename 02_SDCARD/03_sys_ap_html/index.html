@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
     <link rel="manifest" href="manifest.webmanifest">
     <link rel="stylesheet" href="bootstrap.min.css">
-    <link rel="stylesheet" href="styles.min.css?v=mode1-20260502h">
+    <link rel="stylesheet" href="styles.min.css?v=mode1-20260605a">
 </head>
 <body>
     <main class="app-shell">
@@ -39,10 +39,24 @@
 
         <section class="app-screen active" data-screen-panel="prepare" aria-label="Подготовка изображения">
             <section class="toolbar" aria-label="Подготовка изображения">
-                <input type="file" class="sysInputFile d-none" id="File_Input" accept="image/*">
+                <input type="file" class="sysInputFile d-none" id="File_Input" accept="image/*" multiple>
                 <button class="btn primary-action" id="Input_Button" type="button">Выбрать фото</button>
                 <button class="btn secondary-action crop-action" id="Crop_Button" type="button">Обрезка: вкл</button>
                 <button class="btn secondary-action" id="Rotate_Button" type="button">Ориентация: авто</button>
+            </section>
+
+            <section class="batch-panel" id="Batch_Panel" hidden aria-live="polite">
+                <div>
+                    <p class="section-kicker">Пачка</p>
+                    <strong id="Batch_Status">0 фото</strong>
+                    <span id="Batch_File_Label">Выберите несколько изображений, чтобы пройти их по очереди.</span>
+                </div>
+                <div class="batch-actions">
+                    <button class="btn secondary-action" id="Batch_Prev_Button" type="button">Назад</button>
+                    <button class="btn secondary-action" id="Batch_Next_Button" type="button">Пропустить</button>
+                    <button class="btn library-action" id="Batch_Save_Next_Button" type="button">Сохранить и дальше</button>
+                    <button class="btn secondary-action" id="Batch_Clear_Button" type="button">Сбросить пачку</button>
+                </div>
             </section>
 
             <article class="mode-workspace live-panel" aria-label="Отправка на экран сейчас">
@@ -61,8 +75,8 @@
                         </div>
                         <div class="image-stage image-stage-input is-empty" id="Input_Stage" role="button" tabindex="0" aria-label="Выбрать изображение">
                             <div class="stage-hint" id="Input_Stage_Hint">
-                                <strong>Нажмите, чтобы выбрать фото</strong>
-                                <span>После выбора можно просто ткнуть сюда ещё раз, чтобы заменить изображение.</span>
+                                <strong>Нажмите, чтобы выбрать одно или несколько фото</strong>
+                                <span>Пачку можно пройти по очереди: кадрировать, сохранить, перейти к следующему.</span>
                             </div>
                             <img src="placeholder.svg" id="Image_Input" alt="Исходное изображение">
                         </div>
@@ -280,6 +294,6 @@
     </main>
 
     <script src="bootstrap.min.js"></script>
-    <script src="script.min.js?v=mode1-20260502d"></script>
+    <script src="script.min.js?v=mode1-20260605a"></script>
 </body>
 </html>

@@ -303,14 +303,14 @@ void ePaperPort::EPD_SetPixel(uint16_t x, uint16_t y, uint16_t color) {
     DispBuffer[index] = (px & xor_mask) | (color << shift);
 }
 
-void ePaperPort::EPD_SetRotatedPixel(uint16_t x, uint16_t y, uint8_t color) {
+void ePaperPort::EPD_SetScanoutPixel(uint16_t x, uint16_t y, uint8_t color) {
     if (x >= width_ || y >= height_ || RotationBuffer == NULL) {
         return;
     }
     EPD_SetPixel4(RotationBuffer, width_, x, y, color);
 }
 
-void ePaperPort::EPD_DrawRotatedCircle(uint16_t cx, uint16_t cy, uint16_t radius, uint8_t color) {
+void ePaperPort::EPD_DrawScanoutFilledCircle(uint16_t cx, uint16_t cy, uint16_t radius, uint8_t color) {
     int r = radius;
     for (int dy = -r; dy <= r; dy++) {
         for (int dx = -r; dx <= r; dx++) {
@@ -320,27 +320,39 @@ void ePaperPort::EPD_DrawRotatedCircle(uint16_t cx, uint16_t cy, uint16_t radius
             int x = (int)cx + dx;
             int y = (int)cy + dy;
             if (x >= 0 && y >= 0) {
-                EPD_SetRotatedPixel((uint16_t)x, (uint16_t)y, color);
+                EPD_SetScanoutPixel((uint16_t)x, (uint16_t)y, color);
             }
         }
     }
 }
 
-void ePaperPort::EPD_DrawRotatedCrescent(uint16_t cx, uint16_t cy) {
-    EPD_DrawRotatedCircle(cx, cy, 6, ColorWhite);
-    EPD_DrawRotatedCircle(cx, cy, 4, ColorBlue);
-    EPD_DrawRotatedCircle(cx + 2, cy + 3, 4, ColorWhite);
+void ePaperPort::EPD_DrawScanoutMoonIcon(uint16_t cx, uint16_t cy) {
+    EPD_DrawScanoutFilledCircle(cx, cy, 6, ColorWhite);
+    EPD_DrawScanoutFilledCircle(cx, cy, 4, ColorBlue);
+    EPD_DrawScanoutFilledCircle(cx + 2, cy + 3, 4, ColorWhite);
 }
 
 void ePaperPort::EPD_DrawStatusOverlay() {
-    bool draw_battery = overlayBatteryPercent >= 100 || (overlayBatteryPercent >= 0 && overlayBatteryPercent < 20);
-    if (!draw_battery) {
+    const bool draw_battery = overlayBatteryPercent >= 100 || (overlayBatteryPercent >= 0 && overlayBatteryPercent < 20);
+    const bool draw_sleep = overlaySleep;
+    if (!draw_battery && !draw_sleep) {
         return;
     }
-    const uint16_t margin = 9;
-    const uint16_t circle_radius = 4;
-    const uint16_t circle_x = width_ - margin - circle_radius;
-    const uint16_t circle_y = height_ - margin - circle_radius;
+
+    const uint16_t corner_margin = 9;
+    const uint16_t battery_r = 4;
+    const uint16_t moon_outer_r = 6;
+    const uint16_t icon_gap = 4;
+
+    const uint16_t battery_cx = width_ - corner_margin - battery_r;
+    const uint16_t battery_cy = height_ - corner_margin - battery_r;
+
+    const uint16_t moon_cx = width_ - corner_margin - moon_outer_r;
+    uint16_t moon_cy = height_ - corner_margin - moon_outer_r;
+    if (draw_battery && draw_sleep) {
+        moon_cy = battery_cy - battery_r - icon_gap - moon_outer_r;
+    }
+
     if (draw_battery) {
         uint8_t color = ColorYellow;
         if (overlayBatteryPercent >= 100) {
@@ -348,11 +360,12 @@ void ePaperPort::EPD_DrawStatusOverlay() {
         } else if (overlayBatteryPercent <= 10) {
             color = ColorRed;
         }
-        EPD_DrawRotatedCircle(circle_x, circle_y, circle_radius + 1, ColorWhite);
-        EPD_DrawRotatedCircle(circle_x, circle_y, circle_radius, color);
+        EPD_DrawScanoutFilledCircle(battery_cx, battery_cy, battery_r + 1, ColorWhite);
+        EPD_DrawScanoutFilledCircle(battery_cx, battery_cy, battery_r, color);
     }
-    if (overlaySleep) {
-        EPD_DrawRotatedCrescent(circle_x, circle_y - 13);
+
+    if (draw_sleep) {
+        EPD_DrawScanoutMoonIcon(moon_cx, moon_cy);
     }
 }
 

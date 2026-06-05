@@ -1,2 +1,4 @@
 CompileFlags:
     Remove: [-f*, -m*]
+    # After `idf.py build` or scripts/pp-build.sh — uses build/compile_commands.json
+    CompilationDatabase: build

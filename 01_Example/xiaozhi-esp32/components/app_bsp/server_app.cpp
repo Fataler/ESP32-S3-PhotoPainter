@@ -13,6 +13,9 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <sys/unistd.h>
+#include <unistd.h>
+#include <vector>
+#include <string>
 #include "freertos/task.h"
 #include "server_app.h"
 #include "sdcard_bsp.h"
@@ -528,13 +531,70 @@ static void set_current_foundation_image(const char *name) {
         deserializeJson(config_doc, (const char *)buffer);
     }
     config_doc["current"] = name;
+    config_doc["last"] = name;
     config_doc["skipCurrentOnce"] = true;
-    if (!config_doc["last"].is<const char *>()) {
-        config_doc["last"] = name;
-    }
+    config_doc.remove("next");
+    config_doc.remove("randomBag");
     if (!config_doc["timer"].is<int>()) {
         config_doc["timer"] = 300;
     }
+
+    size_t out_len = serializeJsonPretty(config_doc, (char *)buffer, 4096);
+    if (out_len > 0) {
+        SDPort_->SDPort_WriteFile(USER_CONFIG_PATH, buffer, out_len);
+    }
+    heap_caps_free(buffer);
+}
+
+static void cleanup_deleted_foundation_image(const char *name) {
+    if (name == NULL || name[0] == '\0') {
+        return;
+    }
+
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+    if (buffer == NULL) {
+        return;
+    }
+
+    JsonDocument config_doc;
+    int len = SDPort_->SDPort_ReadOffset(USER_CONFIG_PATH, buffer, 4095, 0);
+    if (len <= 0) {
+        heap_caps_free(buffer);
+        return;
+    }
+
+    buffer[len] = '\0';
+    if (deserializeJson(config_doc, (const char *)buffer)) {
+        heap_caps_free(buffer);
+        return;
+    }
+
+    if (strcmp(config_doc["last"] | "", name) == 0) {
+        config_doc["last"] = "";
+    }
+    if (strcmp(config_doc["current"] | "", name) == 0) {
+        config_doc["current"] = "";
+        config_doc["skipCurrentOnce"] = false;
+    }
+    if (strcmp(config_doc["next"] | "", name) == 0) {
+        config_doc.remove("next");
+    }
+
+    if (config_doc["playlist"].is<JsonArray>()) {
+        JsonArray old_playlist = config_doc["playlist"].as<JsonArray>();
+        std::vector<std::string> kept;
+        for (const char *item : old_playlist) {
+            if (item != NULL && strcmp(item, name) != 0) {
+                kept.push_back(item);
+            }
+        }
+        JsonArray playlist = config_doc["playlist"].to<JsonArray>();
+        playlist.clear();
+        for (const std::string &item : kept) {
+            playlist.add(item.c_str());
+        }
+    }
+    config_doc.remove("randomBag");
 
     size_t out_len = serializeJsonPretty(config_doc, (char *)buffer, 4096);
     if (out_len > 0) {
@@ -604,9 +664,8 @@ void sta_wifi_event_callback(void *arg, esp_event_base_t event_base, int32_t eve
 void ap_wifi_event_callback(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 
 static void customfree(char *res) {
-    if(NULL != res) {
+    if (res != NULL) {
         heap_caps_free(res);
-        res = NULL;
     }
 }
 
@@ -682,7 +741,6 @@ void ap_wifi_event_callback(void *arg, esp_event_base_t event_base, int32_t even
         xEventGroupSetBits(ServerPortGroups, (0x01UL << 4));
     } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
         xEventGroupSetBits(ServerPortGroups, (0x01UL << 5));
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_AP_STAIPASSIGNED) {
     }
 }
 
@@ -878,15 +936,6 @@ esp_err_t admin_image_get_handler(httpd_req_t *req) {
     }
 
     const char *ext = strrchr(filename, '.');
-    if (ext && strcasecmp(ext, ".bmp") == 0) {
-        httpd_resp_set_type(req, "image/bmp");
-    } else if (ext && (strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0)) {
-        httpd_resp_set_type(req, "image/jpeg");
-    } else if (ext && strcasecmp(ext, ".png") == 0) {
-        httpd_resp_set_type(req, "image/png");
-    } else {
-        httpd_resp_set_type(req, "application/octet-stream");
-    }
     const char *content_type = ext && strcasecmp(ext, ".bmp") == 0 ? "image/bmp" :
                                ext && (strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0) ? "image/jpeg" :
                                ext && strcasecmp(ext, ".png") == 0 ? "image/png" : "application/octet-stream";
@@ -1082,6 +1131,7 @@ esp_err_t admin_image_delete_handler(httpd_req_t *req) {
     if (make_thumb_path(name, path, sizeof(path))) {
         unlink(path);
     }
+    cleanup_deleted_foundation_image(name);
 
     httpd_resp_set_type(req, "application/json");
     set_connection_close(req);
@@ -1223,9 +1273,16 @@ esp_err_t admin_config_post_handler(httpd_req_t *req) {
         deserializeJson(config_doc, (const char *)buffer);
     }
     config_doc["timer"] = timer;
+    bool reset_bag = false;
     const char *order = patch_doc["order"] | "sequential";
-    config_doc["order"] = strcmp(order, "random") == 0 ? "random" : "sequential";
+    const char *normalized_order = strcmp(order, "random") == 0 ? "random" : "sequential";
+    const char *previous_order = config_doc["order"] | "sequential";
+    if (strcmp(previous_order, normalized_order) != 0) {
+        reset_bag = true;
+    }
+    config_doc["order"] = normalized_order;
     if (patch_doc["playlist"].is<JsonArray>()) {
+        reset_bag = true;
         config_doc["playlist"].clear();
         JsonArray playlist = config_doc["playlist"].to<JsonArray>();
         for (const char *name : patch_doc["playlist"].as<JsonArray>()) {
@@ -1248,6 +1305,7 @@ esp_err_t admin_config_post_handler(httpd_req_t *req) {
             config_doc["current"] = "";
         } else if (make_existing_foundation_path(current, (char *)buffer, 4096)) {
             config_doc["current"] = current;
+            reset_bag = true;
         }
     }
     if (patch_doc["skipCurrentOnce"].is<bool>()) {
@@ -1278,6 +1336,10 @@ esp_err_t admin_config_post_handler(httpd_req_t *req) {
         schedule["timezoneOffsetMinutes"] = schedule_in["timezoneOffsetMinutes"] | 0;
         schedule["savedEpoch"] = schedule_in["savedEpoch"] | 0;
         schedule["savedMillis"] = (long long)(esp_timer_get_time() / 1000);
+    }
+
+    if (reset_bag) {
+        config_doc.remove("randomBag");
     }
 
     size_t out_len = serializeJsonPretty(config_doc, (char *)buffer, 4096);
