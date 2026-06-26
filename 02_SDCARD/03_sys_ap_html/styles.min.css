@@ -998,7 +998,7 @@ h1 {
 }
 
 .library-item {
-    grid-template-columns: auto auto 132px minmax(0, 1fr) auto;
+    grid-template-columns: auto 132px minmax(0, 1fr) auto;
     align-items: center;
     padding: 10px 12px;
     border: 1px solid #e5dac9;
@@ -1044,8 +1044,7 @@ h1 {
     background: #faf8f4;
 }
 
-.library-skeleton-check,
-.library-skeleton-drag {
+.library-skeleton-check {
     border-radius: 6px;
     background: #e8e0d4;
     position: relative;
@@ -1055,12 +1054,6 @@ h1 {
 .library-skeleton-check {
     width: 18px;
     height: 18px;
-}
-
-.library-skeleton-drag {
-    width: 34px;
-    height: 36px;
-    border-radius: 10px;
 }
 
 .library-skeleton-thumb {
@@ -1566,7 +1559,7 @@ h1 {
     }
 
     .library-item {
-        grid-template-columns: auto auto 88px minmax(0, 1fr);
+        grid-template-columns: auto 88px minmax(0, 1fr);
         gap: 8px;
         padding: 8px;
         scroll-margin: 76px;

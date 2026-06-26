@@ -428,11 +428,11 @@ uint8_t ePaperPort::EPD_ColorToePaperColor(uint8_t b,uint8_t g,uint8_t r) {
     return ColorWhite;
 }
 
-void ePaperPort::EPD_SDcardBmpShakingColor(const char *path,uint16_t x_start, uint16_t y_start) {
+bool ePaperPort::EPD_SDcardBmpShakingColor(const char *path,uint16_t x_start, uint16_t y_start) {
     uint8_t r,g,b;
     uint8_t *buffer = EPD_ParseBMPImage(path);
     if(NULL == buffer) {
-        return;
+        return false;
     }
     uint8_t* scapeBuffer = (uint8_t*)buffer;
     for(int y = 0; y < src_height; y++) {
@@ -445,13 +445,14 @@ void ePaperPort::EPD_SDcardBmpShakingColor(const char *path,uint16_t x_start, ui
             EPD_SetPixel(x_start + x, y_start + y, color);
         }
     }
+    return true;
 }
 
-void ePaperPort::EPD_SDcardIMGShakingColor(const char *path,uint16_t x_start, uint16_t y_start) {
-    EPD_SDcardScaleIMGShakingColor(path, x_start, y_start);
+bool ePaperPort::EPD_SDcardIMGShakingColor(const char *path,uint16_t x_start, uint16_t y_start) {
+    return EPD_SDcardScaleIMGShakingColor(path, x_start, y_start);
 }
 
-void ePaperPort::EPD_SDcardScaleIMGShakingColor(const char *path,uint16_t x_start, uint16_t y_start) {
+bool ePaperPort::EPD_SDcardScaleIMGShakingColor(const char *path,uint16_t x_start, uint16_t y_start) {
     uint8_t *decimgbuff = NULL;
     int img_len = 0;
     uint8_t *scale_buffer = NULL;
@@ -468,24 +469,24 @@ void ePaperPort::EPD_SDcardScaleIMGShakingColor(const char *path,uint16_t x_star
     if(strstr(path, ".jpg") || strstr(path, ".JPG")) {
         if(dither_.ImgDecode_TFOneJPGPicture(path,&decimgbuff,&img_len,&s_width,&s_height) != ESP_OK) {
             ESP_LOGE(TAG, "jpg dec fill");
-            return;
+            return false;
         }
         decoded_type = DECODED_JPG;
     } else if(strstr(path, ".png") || strstr(path, ".PNG")) {
         if(dither_.ImgDecode_TFOnePNGPicture(path,&decimgbuff,&s_width,&s_height) != ESP_OK) {
             ESP_LOGE(TAG, "PNG dec fill");
-            return;
+            return false;
         }
         decoded_type = DECODED_PNG;
     } else if(strstr(path, ".bmp") || strstr(path, ".BMP")) {
         if(dither_.ImgDecodebmp_TFOneBMPPicture(path,&decimgbuff,&s_width,&s_height) != ESP_OK) {
             ESP_LOGE(TAG, "BMP dec fill");
-            return;
+            return false;
         }
         decoded_type = DECODED_BMP;
     } else {
         ESP_LOGE(TAG, "Unsupported image type: %s", path);
-        return;
+        return false;
     }
 
     ESP_LOGW(TAG,"imgdecode:(%d,%d)",s_width,s_height);
@@ -494,7 +495,7 @@ void ePaperPort::EPD_SDcardScaleIMGShakingColor(const char *path,uint16_t x_star
         if(decoded_type == DECODED_JPG) dither_.ImgDecode_JPGBufferFree(decimgbuff);
         else if(decoded_type == DECODED_PNG) dither_.ImgDecode_PNGBufferFree(decimgbuff);
         else if(decoded_type == DECODED_BMP) dither_.ImgDecode_BMPBufferFree(decimgbuff);
-        return;
+        return false;
     }
 
     int target_w = (s_width > s_height) ? width_ : height_;
@@ -510,7 +511,7 @@ void ePaperPort::EPD_SDcardScaleIMGShakingColor(const char *path,uint16_t x_star
             if(decoded_type == DECODED_JPG) dither_.ImgDecode_JPGBufferFree(decimgbuff);
             else if(decoded_type == DECODED_PNG) dither_.ImgDecode_PNGBufferFree(decimgbuff);
             else if(decoded_type == DECODED_BMP) dither_.ImgDecode_BMPBufferFree(decimgbuff);
-            return;
+            return false;
         }
         dither_.ImgDecode_ScaleRgb888Nearest(decimgbuff, s_width, s_height, scale_buffer, target_w, target_h);
         if(decoded_type == DECODED_JPG) dither_.ImgDecode_JPGBufferFree(decimgbuff);
@@ -534,7 +535,7 @@ void ePaperPort::EPD_SDcardScaleIMGShakingColor(const char *path,uint16_t x_star
             else if(decoded_type == DECODED_PNG) dither_.ImgDecode_PNGBufferFree(decimgbuff);
             else if(decoded_type == DECODED_BMP) dither_.ImgDecode_BMPBufferFree(decimgbuff);
         }
-        return;
+        return false;
     }
 
     dither_.ImgDecode_DitherRgb888(dither_input, floyd_buffer, s_width, s_height);
@@ -551,10 +552,11 @@ void ePaperPort::EPD_SDcardScaleIMGShakingColor(const char *path,uint16_t x_star
     if (dither_.ImgDecode_EncodingBmpToSdcard(img_to_bmpName, floyd_buffer, s_width, s_height) == ESP_OK) {
         free(floyd_buffer);
         floyd_buffer = NULL;
-        EPD_SDcardBmpShakingColor(img_to_bmpName, x_start, y_start);
+        return EPD_SDcardBmpShakingColor(img_to_bmpName, x_start, y_start);
     } else {
         ESP_LOGE(TAG, "bmp to sdcard fill");
         free(floyd_buffer);
+        return false;
     }
 }
 

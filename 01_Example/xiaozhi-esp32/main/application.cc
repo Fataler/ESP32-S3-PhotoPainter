@@ -11,7 +11,9 @@
 #include "settings.h"
 
 #include <cstring>
+#include <ctime>
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <cJSON.h>
 #include <driver/gpio.h>
 #include <arpa/inet.h>
@@ -36,6 +38,103 @@ static const char* const STATE_STRINGS[] = {
     "fatal_error",
     "invalid_state"
 };
+
+static constexpr const char* kMode1ConfigPath = "/sdcard/06_user_foundation_img/config.txt";
+static constexpr size_t kMode1ConfigBufferSize = 16 * 1024;
+static constexpr time_t kMinValidEpoch = 1704067200; // 2024-01-01
+
+static bool UpsertJsonNumber(cJSON* object, const char* key, double value) {
+    cJSON* item = cJSON_GetObjectItem(object, key);
+    if (cJSON_IsNumber(item)) {
+        cJSON_SetNumberValue(item, value);
+        return true;
+    }
+    if (item != nullptr) {
+        cJSON_DeleteItemFromObject(object, key);
+    }
+    return cJSON_AddNumberToObject(object, key, value) != nullptr;
+}
+
+static bool SyncMode1ScheduleEpochFromSystemTime() {
+    if (SDPort == nullptr) {
+        ESP_LOGW(TAG, "skip mode 1 time sync: SD is not ready");
+        return false;
+    }
+
+    time_t now = time(nullptr);
+    if (now < kMinValidEpoch) {
+        ESP_LOGW(TAG, "skip mode 1 time sync: system time is not valid: %lld", (long long)now);
+        return false;
+    }
+
+    char* buffer = (char*)malloc(kMode1ConfigBufferSize);
+    if (buffer == nullptr) {
+        ESP_LOGE(TAG, "skip mode 1 time sync: no config buffer");
+        return false;
+    }
+
+    int len = SDPort->SDPort_ReadOffset(kMode1ConfigPath, buffer, kMode1ConfigBufferSize - 1, 0);
+    if (len <= 0) {
+        ESP_LOGW(TAG, "skip mode 1 time sync: config read failed");
+        free(buffer);
+        return false;
+    }
+    buffer[len] = '\0';
+
+    cJSON* root = cJSON_Parse(buffer);
+    if (root == nullptr) {
+        ESP_LOGW(TAG, "skip mode 1 time sync: config JSON parse failed");
+        free(buffer);
+        return false;
+    }
+
+    cJSON* schedule = cJSON_GetObjectItem(root, "schedule");
+    if (!cJSON_IsObject(schedule)) {
+        ESP_LOGI(TAG, "skip mode 1 time sync: schedule is not configured");
+        cJSON_Delete(root);
+        free(buffer);
+        return false;
+    }
+
+    int timezone_offset = 0;
+    cJSON* timezone = cJSON_GetObjectItem(schedule, "timezoneOffsetMinutes");
+    if (cJSON_IsNumber(timezone)) {
+        timezone_offset = timezone->valueint;
+    }
+
+    time_t utc_epoch = now - timezone_offset * 60;
+    bool ok = UpsertJsonNumber(schedule, "savedEpoch", (double)utc_epoch) &&
+              UpsertJsonNumber(schedule, "savedMillis", (double)(esp_timer_get_time() / 1000));
+    if (!ok) {
+        ESP_LOGE(TAG, "mode 1 time sync failed: JSON update failed");
+        cJSON_Delete(root);
+        free(buffer);
+        return false;
+    }
+
+    char* output = cJSON_PrintUnformatted(root);
+    if (output == nullptr || strlen(output) + 1 > kMode1ConfigBufferSize) {
+        ESP_LOGE(TAG, "mode 1 time sync failed: serialized config too large");
+        if (output != nullptr) {
+            cJSON_free(output);
+        }
+        cJSON_Delete(root);
+        free(buffer);
+        return false;
+    }
+
+    ok = SDPort->SDPort_WriteFile(kMode1ConfigPath, output, strlen(output)) == ESP_OK;
+    if (ok) {
+        ESP_LOGI(TAG, "mode 1 schedule time synced: epoch=%lld timezone=%d", (long long)utc_epoch, timezone_offset);
+    } else {
+        ESP_LOGE(TAG, "mode 1 time sync failed: config write failed");
+    }
+
+    cJSON_free(output);
+    cJSON_Delete(root);
+    free(buffer);
+    return ok;
+}
 
 Application::Application() {
     event_group_ = xEventGroupCreate();
@@ -535,6 +634,9 @@ void Application::Start() {
     SetDeviceState(kDeviceStateIdle);
 
     has_server_time_ = ota.HasServerTime();
+    if (has_server_time_) {
+        SyncMode1ScheduleEpochFromSystemTime();
+    }
     if (protocol_started) {
         std::string message = std::string(Lang::Strings::VERSION) + ota.GetCurrentVersion();
         display->ShowNotification(message.c_str());

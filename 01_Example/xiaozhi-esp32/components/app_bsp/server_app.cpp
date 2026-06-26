@@ -14,8 +14,6 @@
 #include <sys/stat.h>
 #include <sys/unistd.h>
 #include <unistd.h>
-#include <vector>
-#include <string>
 #include "freertos/task.h"
 #include "server_app.h"
 #include "sdcard_bsp.h"
@@ -43,6 +41,7 @@ static const char *TAG = "server_bsp";
 #define USER_THUMB_DIR USER_FOUNDATION_DIR "/.thumbs"
 #define USER_CONFIG_PATH USER_FOUNDATION_DIR "/config.txt"
 #define SYS_HTML_DIR "/sdcard/03_sys_ap_html"
+#define USER_CONFIG_BUFFER_SIZE (16 * 1024)
 
 EventGroupHandle_t ServerPortGroups;
 static CustomSDPort *SDPort_ = NULL;
@@ -519,13 +518,13 @@ static void set_current_foundation_image(const char *name) {
         return;
     }
 
-    uint8_t *buffer = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(USER_CONFIG_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
     if (buffer == NULL) {
         return;
     }
 
     JsonDocument config_doc;
-    int len = SDPort_->SDPort_ReadOffset(USER_CONFIG_PATH, buffer, 4095, 0);
+    int len = SDPort_->SDPort_ReadOffset(USER_CONFIG_PATH, buffer, USER_CONFIG_BUFFER_SIZE - 1, 0);
     if (len > 0) {
         buffer[len] = '\0';
         deserializeJson(config_doc, (const char *)buffer);
@@ -535,11 +534,14 @@ static void set_current_foundation_image(const char *name) {
     config_doc["skipCurrentOnce"] = true;
     config_doc.remove("next");
     config_doc.remove("randomBag");
+    config_doc.remove("randomSeen");
+    config_doc.remove("playlist");
     if (!config_doc["timer"].is<int>()) {
         config_doc["timer"] = 300;
     }
 
-    size_t out_len = serializeJsonPretty(config_doc, (char *)buffer, 4096);
+    size_t measured_len = measureJsonPretty(config_doc);
+    size_t out_len = measured_len + 1 <= USER_CONFIG_BUFFER_SIZE ? serializeJsonPretty(config_doc, (char *)buffer, USER_CONFIG_BUFFER_SIZE) : 0;
     if (out_len > 0) {
         SDPort_->SDPort_WriteFile(USER_CONFIG_PATH, buffer, out_len);
     }
@@ -551,13 +553,13 @@ static void cleanup_deleted_foundation_image(const char *name) {
         return;
     }
 
-    uint8_t *buffer = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(USER_CONFIG_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
     if (buffer == NULL) {
         return;
     }
 
     JsonDocument config_doc;
-    int len = SDPort_->SDPort_ReadOffset(USER_CONFIG_PATH, buffer, 4095, 0);
+    int len = SDPort_->SDPort_ReadOffset(USER_CONFIG_PATH, buffer, USER_CONFIG_BUFFER_SIZE - 1, 0);
     if (len <= 0) {
         heap_caps_free(buffer);
         return;
@@ -580,23 +582,12 @@ static void cleanup_deleted_foundation_image(const char *name) {
         config_doc.remove("next");
     }
 
-    if (config_doc["playlist"].is<JsonArray>()) {
-        JsonArray old_playlist = config_doc["playlist"].as<JsonArray>();
-        std::vector<std::string> kept;
-        for (const char *item : old_playlist) {
-            if (item != NULL && strcmp(item, name) != 0) {
-                kept.push_back(item);
-            }
-        }
-        JsonArray playlist = config_doc["playlist"].to<JsonArray>();
-        playlist.clear();
-        for (const std::string &item : kept) {
-            playlist.add(item.c_str());
-        }
-    }
+    config_doc.remove("playlist");
     config_doc.remove("randomBag");
+    config_doc.remove("randomSeen");
 
-    size_t out_len = serializeJsonPretty(config_doc, (char *)buffer, 4096);
+    size_t measured_len = measureJsonPretty(config_doc);
+    size_t out_len = measured_len + 1 <= USER_CONFIG_BUFFER_SIZE ? serializeJsonPretty(config_doc, (char *)buffer, USER_CONFIG_BUFFER_SIZE) : 0;
     if (out_len > 0) {
         SDPort_->SDPort_WriteFile(USER_CONFIG_PATH, buffer, out_len);
     }
@@ -1197,7 +1188,7 @@ esp_err_t admin_reboot_mode1_handler(httpd_req_t *req) {
 }
 
 esp_err_t admin_config_get_handler(httpd_req_t *req) {
-    uint8_t *buffer = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(USER_CONFIG_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
     if (buffer == NULL) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No memory");
         return ESP_ERR_NO_MEM;
@@ -1205,7 +1196,7 @@ esp_err_t admin_config_get_handler(httpd_req_t *req) {
 
     int timer = 300;
     JsonDocument doc;
-    int len = SDPort_->SDPort_ReadOffset(USER_CONFIG_PATH, buffer, 4095, 0);
+    int len = SDPort_->SDPort_ReadOffset(USER_CONFIG_PATH, buffer, USER_CONFIG_BUFFER_SIZE - 1, 0);
     if (len > 0) {
         buffer[len] = '\0';
         if (!deserializeJson(doc, (const char *)buffer)) {
@@ -1223,16 +1214,7 @@ esp_err_t admin_config_get_handler(httpd_req_t *req) {
     if (doc["schedule"].is<JsonObject>()) {
         response_doc["schedule"] = doc["schedule"];
     }
-    JsonArray playlist = response_doc["playlist"].to<JsonArray>();
-    if (doc["playlist"].is<JsonArray>()) {
-        for (const char *name : doc["playlist"].as<JsonArray>()) {
-            if (name != NULL) {
-                playlist.add(name);
-            }
-        }
-    }
-
-    size_t out_len = serializeJson(response_doc, (char *)buffer, 4096);
+    size_t out_len = serializeJson(response_doc, (char *)buffer, USER_CONFIG_BUFFER_SIZE);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     set_connection_close(req);
@@ -1260,42 +1242,34 @@ esp_err_t admin_config_post_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    uint8_t *buffer = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(USER_CONFIG_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
     if (buffer == NULL) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No memory");
         return ESP_ERR_NO_MEM;
     }
 
     JsonDocument config_doc;
-    int len = SDPort_->SDPort_ReadOffset(USER_CONFIG_PATH, buffer, 4095, 0);
+    int len = SDPort_->SDPort_ReadOffset(USER_CONFIG_PATH, buffer, USER_CONFIG_BUFFER_SIZE - 1, 0);
     if (len > 0) {
         buffer[len] = '\0';
         deserializeJson(config_doc, (const char *)buffer);
     }
     config_doc["timer"] = timer;
-    bool reset_bag = false;
+    bool reset_random_seen = false;
     const char *order = patch_doc["order"] | "sequential";
     const char *normalized_order = strcmp(order, "random") == 0 ? "random" : "sequential";
     const char *previous_order = config_doc["order"] | "sequential";
     if (strcmp(previous_order, normalized_order) != 0) {
-        reset_bag = true;
+        reset_random_seen = true;
     }
     config_doc["order"] = normalized_order;
-    if (patch_doc["playlist"].is<JsonArray>()) {
-        reset_bag = true;
-        config_doc["playlist"].clear();
-        JsonArray playlist = config_doc["playlist"].to<JsonArray>();
-        for (const char *name : patch_doc["playlist"].as<JsonArray>()) {
-            if (name != NULL && make_existing_foundation_path(name, (char *)buffer, 4096)) {
-                playlist.add(name);
-            }
-        }
-    }
+    config_doc.remove("playlist");
+    config_doc.remove("randomBag");
     const char *last = patch_doc["last"];
     if (last != NULL) {
         if (last[0] == '\0') {
             config_doc["last"] = "";
-        } else if (make_existing_foundation_path(last, (char *)buffer, 4096)) {
+        } else if (make_existing_foundation_path(last, (char *)buffer, USER_CONFIG_BUFFER_SIZE)) {
             config_doc["last"] = last;
         }
     }
@@ -1303,9 +1277,9 @@ esp_err_t admin_config_post_handler(httpd_req_t *req) {
     if (current != NULL) {
         if (current[0] == '\0') {
             config_doc["current"] = "";
-        } else if (make_existing_foundation_path(current, (char *)buffer, 4096)) {
+        } else if (make_existing_foundation_path(current, (char *)buffer, USER_CONFIG_BUFFER_SIZE)) {
             config_doc["current"] = current;
-            reset_bag = true;
+            reset_random_seen = true;
         }
     }
     if (patch_doc["skipCurrentOnce"].is<bool>()) {
@@ -1315,7 +1289,7 @@ esp_err_t admin_config_post_handler(httpd_req_t *req) {
     if (next != NULL) {
         if (next[0] == '\0') {
             config_doc.remove("next");
-        } else if (make_existing_foundation_path(next, (char *)buffer, 4096)) {
+        } else if (make_existing_foundation_path(next, (char *)buffer, USER_CONFIG_BUFFER_SIZE)) {
             config_doc["next"] = next;
         }
     }
@@ -1338,11 +1312,12 @@ esp_err_t admin_config_post_handler(httpd_req_t *req) {
         schedule["savedMillis"] = (long long)(esp_timer_get_time() / 1000);
     }
 
-    if (reset_bag) {
-        config_doc.remove("randomBag");
+    if (reset_random_seen) {
+        config_doc.remove("randomSeen");
     }
 
-    size_t out_len = serializeJsonPretty(config_doc, (char *)buffer, 4096);
+    size_t measured_len = measureJsonPretty(config_doc);
+    size_t out_len = measured_len + 1 <= USER_CONFIG_BUFFER_SIZE ? serializeJsonPretty(config_doc, (char *)buffer, USER_CONFIG_BUFFER_SIZE) : 0;
     if (out_len == 0 || SDPort_->SDPort_WriteFile(USER_CONFIG_PATH, buffer, out_len) != ESP_OK) {
         heap_caps_free(buffer);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Config write failed");

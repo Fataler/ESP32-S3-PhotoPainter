@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
     <link rel="manifest" href="manifest.webmanifest">
     <link rel="stylesheet" href="bootstrap.min.css">
-    <link rel="stylesheet" href="styles.min.css?v=mode1-20260605a">
+    <link rel="stylesheet" href="styles.min.css?v=mode1-20260622a">
 </head>
 <body>
     <main class="app-shell">
@@ -141,7 +141,7 @@
                 <div class="admin-heading">
                     <div>
                         <p class="section-kicker">Mode 1</p>
-                        <h2>Плейлист</h2>
+                        <h2>Коллекция</h2>
                     </div>
                     <button class="btn secondary-action refresh-action" id="Refresh_Library_Button" type="button">Обновить</button>
                 </div>
@@ -152,12 +152,11 @@
                         <input id="Library_Search" type="search" placeholder="Имя файла">
                     </label>
                     <div class="library-stats" id="Library_Stats">0 файлов · 0 Б</div>
-                    <button class="btn secondary-action" id="Save_Playlist_Order_Button" type="button">Сохранить порядок</button>
                     <button class="btn delete-action" id="Delete_Selected_Button" type="button" disabled>Удалить выбранные</button>
                 </div>
 
                 <div class="library-toolbar">
-                    <span class="library-hint">Открывается последняя страница коллекции. Можно перетаскивать карточки, использовать ↑ ↓ или выбрать несколько файлов для удаления.</span>
+                    <span class="library-hint">Mode 1 берёт все изображения из этой папки. Можно искать, ставить следующий кадр и удалять несколько файлов.</span>
                 </div>
 
                 <div class="library-list" id="Library_List" aria-live="polite">
@@ -174,7 +173,7 @@
                     <div class="admin-heading">
                         <div>
                             <p class="section-kicker">Mode 1</p>
-                            <h2>Плейлист и таймер</h2>
+                            <h2>Порядок и таймер</h2>
                         </div>
                     </div>
 
@@ -187,10 +186,10 @@
                     <div class="playlist-row">
                         <label for="Playlist_Mode">Порядок показа</label>
                         <select id="Playlist_Mode">
-                            <option value="sequential">По списку</option>
+                            <option value="sequential">По порядку файлов</option>
                             <option value="random">Случайно</option>
                         </select>
-                        <button class="btn secondary-action" id="Save_Playlist_Button" type="button">Сохранить плейлист</button>
+                        <button class="btn secondary-action" id="Save_Playlist_Button" type="button">Сохранить порядок</button>
                     </div>
 
                     <div class="last-image-row" aria-live="polite">
@@ -294,6 +293,6 @@
     </main>
 
     <script src="bootstrap.min.js"></script>
-    <script src="script.min.js?v=mode1-20260605a"></script>
+    <script src="script.min.js?v=mode1-20260622a"></script>
 </body>
 </html>

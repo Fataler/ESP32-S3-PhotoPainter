@@ -214,6 +214,9 @@ void CustomSDPort::SDPort_ScanListDir(const char *path) {
         if (entry->d_type == DT_DIR) { 
             ESP_LOGI(TAG, "Directory: %s", entry->d_name);
         } else {
+            if(entry->d_name[0] == '.') {
+                continue;
+            }
             if(strstr(entry->d_name,"sys_decode.bmp")) {   //这个文件是jpg或者png转码成bmp的,不需要加入列表
                 continue;
             }

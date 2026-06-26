@@ -7,6 +7,7 @@
 #include <esp_log.h>
 #include <esp_random.h>
 #include <vector>
+#include <string>
 #include "user_app.h"
 #include "button_bsp.h"
 #include "power_bsp.h"
@@ -28,6 +29,7 @@ static bool              basic_image_list_scanned = false;
 static list_t* ListHost;
 static const char *TAG = "BasicMode";
 static const char *BasicConfigPath = "/sdcard/06_user_foundation_img/config.txt";
+static const size_t BasicConfigBufferSize = 16 * 1024;
 
 static const char *get_basename(const char *path) {
     const char *slash = strrchr(path, '/');
@@ -56,11 +58,11 @@ static list_node_t *find_node_by_name(const char *name) {
 }
 
 static bool read_basic_config(JsonDocument &doc) {
-    uint8_t *buffer = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(BasicConfigBufferSize, MALLOC_CAP_SPIRAM);
     if (buffer == NULL) {
         return false;
     }
-    int len = SDPort->SDPort_ReadOffset(BasicConfigPath, buffer, 4095, 0);
+    int len = SDPort->SDPort_ReadOffset(BasicConfigPath, buffer, BasicConfigBufferSize - 1, 0);
     if (len <= 0) {
         heap_caps_free(buffer);
         return false;
@@ -72,11 +74,17 @@ static bool read_basic_config(JsonDocument &doc) {
 }
 
 static bool save_basic_config(JsonDocument &doc) {
-    uint8_t *buffer = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+    size_t measured_len = measureJson(doc);
+    if (measured_len + 1 > BasicConfigBufferSize) {
+        ESP_LOGE(TAG, "mode 1 config too large: %u bytes", (unsigned)measured_len);
+        return false;
+    }
+
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(BasicConfigBufferSize, MALLOC_CAP_SPIRAM);
     if (buffer == NULL) {
         return false;
     }
-    size_t len = serializeJsonPretty(doc, (char *)buffer, 4096);
+    size_t len = serializeJson(doc, (char *)buffer, BasicConfigBufferSize);
     bool ok = len > 0 && SDPort->SDPort_WriteFile(BasicConfigPath, buffer, len) == ESP_OK;
     heap_caps_free(buffer);
     return ok;
@@ -203,7 +211,8 @@ static int get_overlay_battery_percent(void) {
 
 static void prepare_deep_sleep_timer(void) {
     if (basic_rtc_epoch_valid) {
-        basic_rtc_epoch += basic_rtc_set_time;
+        int64_t awake_seconds = (esp_timer_get_time() + 500000LL) / 1000000LL;
+        basic_rtc_epoch += awake_seconds + basic_rtc_set_time;
     }
     esp_sleep_enable_timer_wakeup((uint64_t)basic_rtc_set_time * 1000000ULL);
 }
@@ -234,113 +243,105 @@ static void ensure_image_list_scanned(void) {
     ESP_LOGW("IMG","Values:%d",SDPort->Get_Sdcard_ImgValue());
 }
 
-static void build_candidate_nodes(JsonDocument &doc, std::vector<list_node_t *> &candidates) {
-    JsonArray playlist = doc["playlist"].as<JsonArray>();
-    bool has_playlist = doc["playlist"].is<JsonArray>() && playlist.size() > 0;
-
-    if (has_playlist) {
-        for (const char *name : playlist) {
-            list_node_t *node = find_node_by_name(name);
-            if (node == NULL) {
-                continue;
-            }
-            bool duplicate = false;
-            for (list_node_t *existing : candidates) {
-                if (existing == node) {
-                    duplicate = true;
-                    break;
-                }
-            }
-            if (!duplicate) {
-                candidates.push_back(node);
-            }
-        }
-    }
-
-    if (!candidates.empty()) {
-        return;
-    }
-
+static void build_candidate_nodes(std::vector<list_node_t *> &candidates) {
     for (list_node_t *node = ListHost != NULL ? ListHost->head : NULL; node != NULL; node = node->next) {
         candidates.push_back(node);
     }
 }
 
-static void rebuild_random_bag(JsonDocument &doc, const std::vector<list_node_t *> &candidates, const char *last) {
-    std::vector<int> indices;
-    indices.reserve(candidates.size());
-    for (size_t i = 0; i < candidates.size(); ++i) {
-        indices.push_back((int)i);
+static bool candidate_name_exists(const std::vector<list_node_t *> &candidates, const char *name) {
+    if (name == NULL || name[0] == '\0') {
+        return false;
+    }
+    for (list_node_t *node : candidates) {
+        if (strcmp(get_node_name(node), name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool name_in_list(const std::vector<std::string> &names, const char *name) {
+    for (const std::string &existing : names) {
+        if (name != NULL && existing == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void prune_random_seen(JsonDocument &doc, const std::vector<list_node_t *> &candidates, std::vector<std::string> &seen_names) {
+    seen_names.clear();
+    if (!doc["randomSeen"].is<JsonArray>()) {
+        return;
     }
 
-    for (int i = (int)indices.size() - 1; i > 0; --i) {
-        int swap_index = esp_random() % (i + 1);
-        int tmp = indices[i];
-        indices[i] = indices[swap_index];
-        indices[swap_index] = tmp;
-    }
-
-    if (indices.size() > 1 && last != NULL && last[0] != '\0') {
-        const char *first_name = get_node_name(candidates[indices[0]]);
-        if (strcmp(first_name, last) == 0) {
-            for (size_t i = 1; i < indices.size(); ++i) {
-                const char *candidate_name = get_node_name(candidates[indices[i]]);
-                if (strcmp(candidate_name, last) != 0) {
-                    int tmp = indices[0];
-                    indices[0] = indices[i];
-                    indices[i] = tmp;
-                    break;
-                }
-            }
+    for (const char *name : doc["randomSeen"].as<JsonArray>()) {
+        if (candidate_name_exists(candidates, name) && !name_in_list(seen_names, name)) {
+            seen_names.push_back(name);
         }
     }
 
-    JsonArray random_bag = doc["randomBag"].to<JsonArray>();
-    random_bag.clear();
-    for (int index : indices) {
-        random_bag.add(index);
+    JsonArray random_seen = doc["randomSeen"].to<JsonArray>();
+    random_seen.clear();
+    for (const std::string &name : seen_names) {
+        random_seen.add(name.c_str());
     }
 }
 
-static void consume_random_bag_entry(JsonDocument &doc, const char *name) {
-    if (name == NULL || name[0] == '\0' || !doc["randomBag"].is<JsonArray>()) {
+static void remember_random_seen(JsonDocument &doc, const char *name) {
+    if (strcmp(doc["order"] | "sequential", "random") != 0 || name == NULL || name[0] == '\0') {
         return;
     }
 
     std::vector<list_node_t *> candidates;
-    build_candidate_nodes(doc, candidates);
-    if (candidates.empty()) {
-        doc.remove("randomBag");
+    build_candidate_nodes(candidates);
+    if (candidates.empty() || !candidate_name_exists(candidates, name)) {
+        doc.remove("randomSeen");
         return;
     }
 
-    int target_index = -1;
-    for (size_t i = 0; i < candidates.size(); ++i) {
-        if (strcmp(get_node_name(candidates[i]), name) == 0) {
-            target_index = (int)i;
-            break;
-        }
-    }
-    if (target_index < 0) {
+    std::vector<std::string> seen_names;
+    prune_random_seen(doc, candidates, seen_names);
+    if (name_in_list(seen_names, name)) {
         return;
     }
 
-    std::vector<int> remaining;
-    for (JsonVariant value : doc["randomBag"].as<JsonArray>()) {
-        if (!value.is<int>()) {
-            continue;
-        }
-        int bag_index = value.as<int>();
-        if (bag_index >= 0 && bag_index < (int)candidates.size() && bag_index != target_index) {
-            remaining.push_back(bag_index);
+    JsonArray random_seen = doc["randomSeen"].to<JsonArray>();
+    for (const std::string &seen_name : seen_names) {
+        random_seen.add(seen_name.c_str());
+    }
+    random_seen.add(name);
+}
+
+static list_node_t *select_random_node(JsonDocument &doc, const std::vector<list_node_t *> &candidates, const char *last) {
+    std::vector<std::string> seen_names;
+    prune_random_seen(doc, candidates, seen_names);
+
+    std::vector<list_node_t *> unseen;
+    for (list_node_t *node : candidates) {
+        if (!name_in_list(seen_names, get_node_name(node))) {
+            unseen.push_back(node);
         }
     }
 
-    JsonArray random_bag = doc["randomBag"].to<JsonArray>();
-    random_bag.clear();
-    for (int bag_index : remaining) {
-        random_bag.add(bag_index);
+    if (unseen.empty()) {
+        doc.remove("randomSeen");
+        unseen = candidates;
     }
+
+    std::vector<list_node_t *> choices;
+    for (list_node_t *node : unseen) {
+        const char *name = get_node_name(node);
+        if (last == NULL || last[0] == '\0' || strcmp(name, last) != 0) {
+            choices.push_back(node);
+        }
+    }
+    if (choices.empty()) {
+        choices = unseen;
+    }
+
+    return choices[esp_random() % choices.size()];
 }
 
 static void write_last_image_name(JsonDocument &doc, const char *name) {
@@ -348,7 +349,9 @@ static void write_last_image_name(JsonDocument &doc, const char *name) {
         return;
     }
 
-    consume_random_bag_entry(doc, name);
+    doc.remove("playlist");
+    doc.remove("randomBag");
+    remember_random_seen(doc, name);
     doc["last"] = name;
     doc["current"] = name;
     doc["skipCurrentOnce"] = true;
@@ -365,7 +368,7 @@ static bool current_image_is_last(JsonDocument &doc) {
     return (doc["skipCurrentOnce"] | false) && last[0] != '\0' && strcmp(last, current) == 0 && find_node_by_name(last) != NULL;
 }
 
-static list_node_t *select_playlist_node(JsonDocument &doc, bool prefer_last) {
+static list_node_t *select_mode1_node(JsonDocument &doc, bool prefer_last) {
     if (ListHost == NULL || ListHost->len == 0) {
         return NULL;
     }
@@ -373,8 +376,8 @@ static list_node_t *select_playlist_node(JsonDocument &doc, bool prefer_last) {
     const char *order = doc["order"] | "sequential";
     const char *last = doc["last"] | "";
     const char *next = doc["next"] | "";
-    JsonArray playlist = doc["playlist"].as<JsonArray>();
-    bool has_playlist = doc["playlist"].is<JsonArray>() && playlist.size() > 0;
+    doc.remove("playlist");
+    doc.remove("randomBag");
     if (next[0] != '\0') {
         list_node_t *next_node = find_node_by_name(next);
         if (next_node != NULL) {
@@ -389,79 +392,10 @@ static list_node_t *select_playlist_node(JsonDocument &doc, bool prefer_last) {
     }
 
     std::vector<list_node_t *> candidates;
-    build_candidate_nodes(doc, candidates);
+    build_candidate_nodes(candidates);
 
     if (strcmp(order, "random") == 0 && !candidates.empty()) {
-        std::vector<int> bag_indices;
-        std::vector<bool> seen(candidates.size(), false);
-        if (doc["randomBag"].is<JsonArray>()) {
-            for (JsonVariant value : doc["randomBag"].as<JsonArray>()) {
-                if (!value.is<int>()) {
-                    continue;
-                }
-                int bag_index = value.as<int>();
-                if (bag_index >= 0 && bag_index < (int)candidates.size() && !seen[bag_index]) {
-                    bag_indices.push_back(bag_index);
-                    seen[bag_index] = true;
-                }
-            }
-        }
-
-        if (bag_indices.empty()) {
-            rebuild_random_bag(doc, candidates, last);
-            for (JsonVariant value : doc["randomBag"].as<JsonArray>()) {
-                if (value.is<int>()) {
-                    bag_indices.push_back(value.as<int>());
-                }
-            }
-        }
-
-        if (!bag_indices.empty()) {
-            int selected_index = bag_indices.front();
-            bag_indices.erase(bag_indices.begin());
-            JsonArray random_bag = doc["randomBag"].to<JsonArray>();
-            random_bag.clear();
-            for (int bag_index : bag_indices) {
-                random_bag.add(bag_index);
-            }
-            return candidates[selected_index];
-        }
-    }
-
-    if (has_playlist) {
-        int valid_count = 0;
-        int last_valid_index = -1;
-        for (const char *name : playlist) {
-            if (name != NULL && find_node_by_name(name) != NULL) {
-                if (strcmp(name, last) == 0) {
-                    last_valid_index = valid_count;
-                }
-                valid_count++;
-            }
-        }
-
-        if (valid_count > 0) {
-            int target_index = 0;
-            if (strcmp(order, "random") == 0) {
-                target_index = esp_random() % valid_count;
-                if (valid_count > 1 && target_index == last_valid_index) {
-                    target_index = (target_index + 1) % valid_count;
-                }
-            } else if (last_valid_index >= 0) {
-                target_index = (last_valid_index + 1) % valid_count;
-            }
-
-            int seen = 0;
-            for (const char *name : playlist) {
-                list_node_t *node = find_node_by_name(name);
-                if (node != NULL) {
-                    if (seen == target_index) {
-                        return node;
-                    }
-                    seen++;
-                }
-            }
-        }
+        return select_random_node(doc, candidates, last);
     }
 
     int target_index = 0;
@@ -474,13 +408,7 @@ static list_node_t *select_playlist_node(JsonDocument &doc, bool prefer_last) {
             break;
         }
     }
-
-    if (strcmp(order, "random") == 0) {
-        target_index = esp_random() % ListHost->len;
-        if (ListHost->len > 1 && target_index == last_index) {
-            target_index = (target_index + 1) % ListHost->len;
-        }
-    } else if (last_index >= 0) {
+    if (last_index >= 0) {
         target_index = (last_index + 1) % ListHost->len;
     }
 
@@ -510,17 +438,21 @@ static void boot_button_user_Task(void *arg) {
                         request_mode1_sleep();
                         continue;
                     }
-                    list_node_t *sdcard_node = select_playlist_node(config_doc, prefer_last);
+                    list_node_t *sdcard_node = select_mode1_node(config_doc, prefer_last);
                     if (sdcard_node != NULL) {
                         xEventGroupSetBits(Green_led_Mode_queue,set_bit_button(6));
                         Green_led_arg                   = 1;
                         CustomSDPortNode_t *sdcard_Name_node = (CustomSDPortNode_t *) sdcard_node->val;
                         ESP_LOGI(TAG, "displaying mode 1 image: %s", sdcard_Name_node->sdcard_name);
                         ePaperDisplay.EPD_Init();
-                        ePaperDisplay.EPD_SDcardScaleIMGShakingColor(sdcard_Name_node->sdcard_name,0,0);
-                        ePaperDisplay.EPD_SetStatusOverlay(get_overlay_battery_percent(), should_show_sleep_overlay(config_doc, basic_rtc_set_time));
-                        ePaperDisplay.EPD_Display();
-                        write_last_image_name(config_doc, get_basename(sdcard_Name_node->sdcard_name));
+                        bool rendered = ePaperDisplay.EPD_SDcardScaleIMGShakingColor(sdcard_Name_node->sdcard_name,0,0);
+                        if (rendered) {
+                            ePaperDisplay.EPD_SetStatusOverlay(get_overlay_battery_percent(), should_show_sleep_overlay(config_doc, basic_rtc_set_time));
+                            ePaperDisplay.EPD_Display();
+                            write_last_image_name(config_doc, get_basename(sdcard_Name_node->sdcard_name));
+                        } else {
+                            ESP_LOGE(TAG, "failed to render mode 1 image: %s", sdcard_Name_node->sdcard_name);
+                        }
                         Green_led_arg = 0;
                     } else {
                         ESP_LOGW(TAG, "mode 1 has no displayable images; going to sleep");
